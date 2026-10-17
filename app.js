@@ -68,7 +68,7 @@ function qualityOptions(provider) {
 const $ = (id) => (typeof document !== "undefined" ? document.getElementById(id) : null);
 const state = {
   keys: { gemini: "", qwen: "", openai: "" }, qwenBase: DEFAULT_QWEN_BASE,
-  refs: [], page: null, pageUrl: "", history: [], busy: false,
+  refs: [], refRole: "subject", page: null, pageUrl: "", history: [], busy: false,
   modelFilter: "all", search: "", avail: { gemini: null, qwen: null, openai: null }, extra: [],
   preset: "poster", assist: null, assistModel: "gemini-2.5-flash", proofModel: "gemini-3.1-pro-preview", autoCount: 0,
 };
@@ -180,8 +180,51 @@ async function discoverModels() {
 }
 
 /* ---------- 이미지 처리 ---------- */
-const MAX_REFS = 4;
+const MAX_REFS = 6;
 const MAX_SIDE = 1536;
+
+/* 이미지 역할: 모델에게 "몇 번 이미지를 어떻게 쓰라"고 알려 줘야 프롬프트만 쓴 것처럼 나오지 않는다 */
+const REF_ROLES = [
+  { id: "subject", label: "참고(인물)", ko: "얼굴·헤어·안경·체형을 그대로 유지할 인물/주체",
+    en: "SUBJECT REFERENCE - keep this person/subject exactly the same: face and facial features, hairstyle, glasses and accessories, body shape and skin tone. Keep the outfit unless the request says otherwise. Do not beautify, age or alter the identity." },
+  { id: "pose", label: "포즈", ko: "자세·손동작·고개 각도·구도만 따라함 (얼굴·옷·배경은 가져오지 않음)",
+    en: "POSE REFERENCE - copy only the body pose, gesture, hand positions, head angle and camera framing. Do NOT copy this image's face, identity, clothing, colors or background." },
+  { id: "material", label: "합성 재료", ko: "장면에 넣을 물건/요소 (모양·색·로고를 그대로 유지)",
+    en: "COMPOSITE ELEMENT - place this object/element into the scene naturally. Preserve its shape, colors, materials, logos and proportions exactly; adjust only lighting, perspective and scale so it fits." },
+  { id: "background", label: "배경", ko: "이 장면을 배경으로 사용",
+    en: "BACKGROUND - use this image as the scene/background. Keep its layout and key features, and place the subject inside it with matching perspective and scale." },
+  { id: "style", label: "스타일·분위기", ko: "색감·조명·분위기·화풍만 참고 (내용은 가져오지 않음)",
+    en: "STYLE REFERENCE - match only its color palette, lighting, mood, texture and rendering style. Do NOT copy its people, objects or layout." },
+];
+
+function roleOf(r) { return REF_ROLES.find((x) => x.id === (r && r.role)) || REF_ROLES[0]; }
+
+function buildRefGuide(refs, harmonize) {
+  if (!refs.length) return "";
+  const L = ["[Attached images - each image has a specific role. Follow the roles strictly.]"];
+  refs.forEach((r, i) => L.push(`Image ${i + 1}: ${roleOf(r).en}`));
+  const has = (id) => refs.some((r) => roleOf(r).id === id);
+  if (has("subject") && has("pose")) L.push("Combine them: the person from the SUBJECT REFERENCE takes the pose from the POSE REFERENCE.");
+  if (has("material") && (has("subject") || has("background"))) L.push("Every COMPOSITE ELEMENT must appear in the final image, interacting with the subject or placed in the scene where it makes sense.");
+  if (harmonize) L.push("Make one coherent, seamless image that harmonizes with the attached images: consistent light direction, color temperature, shadows, perspective, scale and grain, as if captured in a single shot, with no visible cut-out edges or pasted look.");
+  return L.join("\n");
+}
+
+function withRefGuide(prompt, refs, harmonize) {
+  const guide = buildRefGuide(refs, harmonize);
+  return guide ? `${guide}\n\n[Request]\n${prompt}` : prompt;
+}
+
+function renderRoleBar() {
+  const box = $("roleBar"); box.textContent = "";
+  REF_ROLES.forEach((r) => {
+    const b = document.createElement("button"); b.type = "button"; b.className = "rchip" + (r.id === state.refRole ? " on" : "");
+    b.setAttribute("role", "radio"); b.setAttribute("aria-checked", String(r.id === state.refRole)); b.textContent = r.label;
+    b.addEventListener("click", () => { state.refRole = r.id; renderRoleBar(); });
+    box.append(b);
+  });
+  $("roleNote").textContent = `새로 넣는 이미지 역할: ${roleOf({ role: state.refRole }).ko}`;
+}
 
 async function blobToResized(blob, maxSide) {
   const bmp = await createImageBitmap(blob);
@@ -194,10 +237,10 @@ async function blobToResized(blob, maxSide) {
   return { mime: "image/jpeg", b64: dataUrl.split(",")[1], dataUrl };
 }
 
-async function addRefBlobs(blobs, silent) {
+async function addRefBlobs(blobs, silent, role) {
   for (const b of blobs) {
     if (state.refs.length >= MAX_REFS) { setStatus(`참조 이미지는 최대 ${MAX_REFS}장입니다.`, "err"); break; }
-    try { state.refs.push(await blobToResized(b)); } catch (e) { setStatus("이미지를 읽지 못했습니다.", "err"); }
+    try { state.refs.push(Object.assign(await blobToResized(b), { role: role || state.refRole })); } catch (e) { setStatus("이미지를 읽지 못했습니다.", "err"); }
   }
   renderThumbs();
   if (!silent) maybeAutoAnalyze();
@@ -206,11 +249,18 @@ async function addRefBlobs(blobs, silent) {
 function renderThumbs() {
   const box = $("thumbs"); box.textContent = "";
   state.refs.forEach((img, i) => {
+    const wrap = document.createElement("div"); wrap.className = "ref";
     const d = document.createElement("div"); d.className = "thumb";
-    const im = document.createElement("img"); im.src = img.dataUrl; im.alt = `참조 이미지 ${i + 1}`;
+    const im = document.createElement("img"); im.src = img.dataUrl; im.alt = `참조 이미지 ${i + 1} (${roleOf(img).label})`;
+    const no = document.createElement("span"); no.className = "no"; no.textContent = `${i + 1}`;
     const b = document.createElement("button"); b.type = "button"; b.textContent = "×"; b.setAttribute("aria-label", `참조 이미지 ${i + 1} 삭제`);
     b.addEventListener("click", () => { state.refs.splice(i, 1); renderThumbs(); });
-    d.append(im, b); box.append(d);
+    d.append(im, no, b);
+    const sel = document.createElement("select"); sel.setAttribute("aria-label", `참조 이미지 ${i + 1} 역할`);
+    REF_ROLES.forEach((r) => { const o = document.createElement("option"); o.value = r.id; o.textContent = r.label; sel.append(o); });
+    sel.value = roleOf(img).id; sel.title = roleOf(img).ko;
+    sel.addEventListener("change", () => { img.role = sel.value; renderThumbs(); });
+    wrap.append(d, sel); box.append(wrap);
   });
 }
 
@@ -296,7 +346,10 @@ async function httpError(res, label) {
 
 async function genGemini(key, model, prompt, refs, ratio, size) {
   const parts = [{ text: prompt }];
-  refs.forEach((r) => parts.push({ inlineData: { mimeType: r.mime, data: r.b64 } }));
+  refs.forEach((r, i) => {
+    if (r.role) parts.push({ text: `Image ${i + 1} (${roleOf(r).en.split(" - ")[0]}):` });
+    parts.push({ inlineData: { mimeType: r.mime, data: r.b64 } });
+  });
   const imageConfig = RATIOS.includes(ratio) ? { aspectRatio: ratio } : {};
   if (size && size !== "1K") imageConfig.imageSize = size;
   const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
@@ -396,7 +449,7 @@ function renderGallery() {
     }
     const meta = document.createElement("div"); meta.className = "meta";
     const b = document.createElement("b"); b.textContent = e.label;
-    const info = document.createElement("span"); info.textContent = ` · ${e.ratio}${e.quality && e.quality !== "auto" ? " · " + e.quality : ""}${e.ms ? " · " + (e.ms / 1000).toFixed(1) + "초" : ""}`;
+    const info = document.createElement("span"); info.textContent = ` · ${e.ratio}${e.quality && e.quality !== "auto" ? " · " + e.quality : ""}${e.ms ? " · " + (e.ms / 1000).toFixed(1) + "초" : ""}${e.roles ? " · 이미지 " + e.roles : ""}`;
     const pr = document.createElement("div"); pr.className = "prompt"; pr.textContent = e.prompt;
     meta.append(b, info, pr); card.append(meta);
     if (!e.pending && !e.error) {
@@ -404,7 +457,7 @@ function renderGallery() {
       const s = document.createElement("button"); s.type = "button"; s.textContent = "저장"; s.addEventListener("click", () => saveImage(e));
       const c = document.createElement("button"); c.type = "button"; c.textContent = "프롬프트 복사"; c.addEventListener("click", () => copyText(e.prompt, c));
       const r = document.createElement("button"); r.type = "button"; r.textContent = "참조로 사용";
-      r.addEventListener("click", () => { addRefBlobs([b64ToBlob(e.b64, e.mime)], true); setStatus("결과 이미지를 참조 이미지에 추가했습니다.", "ok"); });
+      r.addEventListener("click", () => { addRefBlobs([b64ToBlob(e.b64, e.mime)], true, "subject"); setStatus("결과 이미지를 참조 이미지에 추가했습니다.", "ok"); });
       acts.append(s, c, r); card.append(acts);
       card.append(reviewNode(e));
     }
@@ -453,14 +506,15 @@ async function onGenerate() {
       try {
         page = await ensureUrlLoaded(); showUrlInfo(page);
         if (page && $("urlImg").checked && refs.length < MAX_REFS) {
-          if (page.kind === "image") refs.push(await blobToResized(page.blob));
+          if (page.kind === "image") refs.push(Object.assign(await blobToResized(page.blob), { role: "material" }));
           else if (page.ogImage) {
-            try { const r = await fetch(page.ogImage, { credentials: "omit" }); if (r.ok) refs.push(await blobToResized(await r.blob())); } catch (e) { /* 대표 이미지 실패는 무시 */ }
+            try { const r = await fetch(page.ogImage, { credentials: "omit" }); if (r.ok) refs.push(Object.assign(await blobToResized(await r.blob()), { role: "material" })); } catch (e) { /* 대표 이미지 실패는 무시 */ }
           }
         }
       } catch (e) { setStatus("URL을 읽지 못해 URL 없이 진행합니다. (" + e.message + ")"); }
     }
-    const prompt = composePrompt(userPrompt, page, $("urlMode").value);
+    const prompt = withRefGuide(composePrompt(userPrompt, page, $("urlMode").value), refs, $("harmonize").checked);
+    if (refs.length) entry.roles = refs.map((r, i) => `${i + 1}:${roleOf(r).label}`).join(" ");
     state.history.unshift(entry); renderGallery();
     setStatus(`${entry.label}로 생성 중... (10~90초)`);
     const t0 = Date.now();
@@ -524,6 +578,7 @@ function buildAssistSystem() {
     "Return ONLY one valid JSON object, no markdown fences, no commentary.",
     "Rules:",
     "- First look carefully at the reference images: identify the product/subject, shapes, colors, materials, any lettering on the product, people (age impression, hair, clothing), and mood. Put a concise factual description in analysis.",
+    "- Each reference image has a role (SUBJECT, POSE, COMPOSITE ELEMENT, BACKGROUND, STYLE). Use each image ONLY for its role and refer to it by number in prompt_en, e.g. 'the man from image 1 in the exact pose of image 2, holding the product from image 3, in the setting of image 4, color-graded like image 5'. From a POSE image take only the pose; from a STYLE image take only the look. The scene must harmonize with the references (matching light, color, perspective, scale).",
     "- Weave the user's keywords into the scene naturally (e.g. 소녀 = a girl, 정수기 = water purifier, 냉장고 = refrigerator). Keywords may name extra objects that are not in the images; include them sensibly.",
     "- Apply the chosen preset faithfully: its composition, lighting, rendering style and whether text belongs in the image.",
     "- If a reference image shows a product, require the product to stay identical in shape, color, logo and proportions. If it shows a person, require the same person (face, hair) to be kept. Never invent or imitate celebrities; additional people are generic fictional people. Children must be wholesome and fully clothed.",
@@ -547,7 +602,10 @@ function buildAssistUser(o) {
     if (o.page.title) L.push(`Title: ${o.page.title}`);
     if (o.page.desc) L.push(`Description: ${o.page.desc}`);
   }
-  L.push(o.imageCount ? `${o.imageCount} reference image(s) attached.` : "No reference images attached; rely on the keywords.");
+  if (o.roles && o.roles.length) {
+    L.push(`${o.roles.length} reference image(s) attached, in this order:`);
+    o.roles.forEach((r, i) => L.push(`Image ${i + 1}: ${r}`));
+  } else L.push(o.imageCount ? `${o.imageCount} reference image(s) attached.` : "No reference images attached; rely on the keywords.");
   return L.join("\n");
 }
 
@@ -660,7 +718,7 @@ async function runAssist(auto) {
     if ($("url").value.trim()) { try { page = await ensureUrlLoaded(); } catch (e) { /* URL 실패는 무시 */ } }
     const preset = PRESETS.find((p) => p.id === state.preset) || PRESETS[0];
     const raw = await callAssist(key, state.assistModel || "gemini-2.5-flash", buildAssistSystem(),
-      buildAssistUser({ keywords: kw, preset, copy: $("copyText").value.trim(), page, imageCount: state.refs.length }), state.refs);
+      buildAssistUser({ keywords: kw, preset, copy: $("copyText").value.trim(), page, imageCount: state.refs.length, roles: state.refs.map((r) => roleOf(r).en) }), state.refs);
     const r = normalizeAssist(parseJsonLoose(raw));
     if (!r.main.prompt_en) throw new Error("프롬프트가 비어 있습니다. 다시 시도해 주세요.");
     if (!r.ratio) r.ratio = preset.ratio;
@@ -834,7 +892,7 @@ function scoreColor(n) { return n >= 85 ? "var(--ok)" : n >= 70 ? "var(--brand)"
 async function applyFollowup(entry, f, generateNow, useRef) {
   $("prompt").value = f.prompt_en; $("count").textContent = f.prompt_en.length;
   if (f.ratio && [...$("ratio").options].some((o) => o.value === f.ratio)) { $("ratio").value = f.ratio; refreshModelUi(); }
-  if (useRef && entry.b64) { await addRefBlobs([b64ToBlob(entry.b64, entry.mime)], true); }
+  if (useRef && entry.b64) { await addRefBlobs([b64ToBlob(entry.b64, entry.mime)], true, "subject"); }
   if (!generateNow) { setStatus(`${f.id} 제안 프롬프트를 입력칸에 넣었습니다. 고친 뒤 '이미지 생성'을 누르세요.`, "ok"); window.scrollTo({ top: 0, behavior: "smooth" }); return; }
   const m = currentModel(); const meta = allModels().find((x) => x.id === $("model").value);
   if (!window.confirm(`${f.id}(${f.label_ko}) 방향으로 ${m.label || m.id}로 이미지를 1장 생성합니다. 비용이 발생합니다 (${meta ? meta.cost : "가격 확인 필요"}). 진행할까요?`)) return;
@@ -939,6 +997,7 @@ async function init() {
   if (ap.kw) $("kw").value = ap.kw;
   $("autoAnalyze").checked = !!ap.autoAnalyze;
   renderPresets();
+  renderRoleBar();
   const saveAssistPrefs = () => store.set({ assistPrefs: { preset: state.preset, kw: $("kw").value, autoAnalyze: $("autoAnalyze").checked } });
   $("presets").addEventListener("click", saveAssistPrefs);
   $("kw").addEventListener("change", saveAssistPrefs);
@@ -1010,4 +1069,4 @@ async function init() {
 }
 
 if (typeof document !== "undefined" && document.getElementById("btnGen")) init();
-if (typeof module !== "undefined") module.exports = { extractExpectedTexts, compareTexts, applyProofToReview, proofread, buildReviewSystem, buildReviewUser, normalizeReview, PRESETS, buildAssistSystem, buildAssistUser, callAssist, normalizeAssist, parseJsonLoose, MODELS, VERIFIED, listProviderModels, allModels, QWEN_SIZES, OPENAI_SIZES, ratioNote, qualityOptions, extractPage, composePrompt, genGemini, genQwen, genOpenAI, generate, state };
+if (typeof module !== "undefined") module.exports = { REF_ROLES, buildRefGuide, withRefGuide, extractExpectedTexts, compareTexts, applyProofToReview, proofread, buildReviewSystem, buildReviewUser, normalizeReview, PRESETS, buildAssistSystem, buildAssistUser, callAssist, normalizeAssist, parseJsonLoose, MODELS, VERIFIED, listProviderModels, allModels, QWEN_SIZES, OPENAI_SIZES, ratioNote, qualityOptions, extractPage, composePrompt, genGemini, genQwen, genOpenAI, generate, state };

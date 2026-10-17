@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Puture View - AI Image Studio",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "모델(Gemini / Qwen / OpenAI)을 고르고 프롬프트와 URL을 넣어 이미지를 생성합니다.",
   "action": {
     "default_title": "Puture View",
