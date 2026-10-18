@@ -60,13 +60,16 @@
     </div>
 
     <div class="field">
-      <span>🎨 합성·패러디용 이미지 (최대 3장, 선택)</span>
+      <span>🎨 합성·패러디 이미지 (최대 5장, 역할 선택)</span>
+      <div id="roleBar" class="rolebar" role="radiogroup" aria-label="새로 넣을 이미지의 역할"></div>
+      <small id="roleNote"></small>
       <div id="drop" class="drop" tabindex="0" role="button" aria-label="합성용 이미지 선택 또는 끌어다 놓기">
-        자유롭게 변형·합성할 사진 (장면, 인물, 패러디 원본 등) · 붙여넣기(Ctrl+V)도 가능
+        위에서 역할을 고른 뒤 끌어다 놓거나 클릭해서 선택 · 자유롭게 변형·합성됩니다 · 붙여넣기(Ctrl+V)도 가능
         <input id="files" type="file" accept="image/*" multiple hidden>
       </div>
       <div id="thumbs" class="thumbs"></div>
-      <small>실존 인물·연예인 사진은 참조로 쓰지 마세요. 본인이거나 동의받은 사진, AI로 만든 가상 인물만 사용하세요.</small>
+      <label class="check mt"><input id="harmonize" type="checkbox" checked> 넣은 이미지와 어울리게 생성 (조명·색감·원근·그림자를 맞춰 자연스럽게 합성)</label>
+      <small>넣은 이미지마다 아래에서 역할을 바꿀 수 있어요. 예) 참고(내 사진) + 포즈(원하는 자세) + 합성 재료(소품) + 배경. 모양이 절대 바뀌면 안 되는 제품은 위 🔒 칸에 넣으세요. 실존 인물·연예인 사진은 쓰지 마세요. 본인이거나 동의받은 사진, AI로 만든 가상 인물만 사용하세요.</small>
     </div>
 
     <section class="assist" aria-labelledby="h-assist">
