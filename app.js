@@ -463,6 +463,11 @@ async function makeCutout(blob) {
   const border = []; for (let x = 0; x < w; x++) border.push(x, (h - 1) * w + x); for (let y = 1; y < h - 1; y++) border.push(y * w, y * w + w - 1);
   const nClear = border.filter(clear).length, nWhite = border.filter((i) => !clear(i) && white(i)).length;
   if ((nClear + nWhite) / border.length < 0.6) return { ok: false, reason: "배경이 흰색·투명이 아니라 제품만 오려낼 수 없어 원본 합성은 건너뛰었습니다." };
+  // 네 변이 모두 배경이어야 합니다. 증명사진처럼 몸이 아래 가장자리에서 잘린 사진을 오리면 반듯한 잘린 면이 그대로 합성됩니다.
+  const bgShare = (idx) => idx.filter((i) => clear(i) || white(i)).length / idx.length;
+  const rowIdx = (y) => Array.from({ length: w }, (_, x) => y * w + x), colIdx = (x) => Array.from({ length: h }, (_, y) => y * w + x);
+  if ([rowIdx(0), rowIdx(h - 1), colIdx(0), colIdx(w - 1)].some((e) => bgShare(e) < 0.85))
+    return { ok: false, reason: "사진 가장자리에서 잘린 피사체(인물 사진 등)라 원본 합성은 건너뛰었습니다. 인물은 🎨 칸에 '참고(인물)'로 넣으세요." };
 
   const bg = new Uint8Array(n); const stack = new Int32Array(n); let sp = 0;
   const visit = (i) => { if (!bg[i] && (clear(i) || white(i))) { bg[i] = 1; stack[sp++] = i; } };
