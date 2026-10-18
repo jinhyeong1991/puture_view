@@ -178,6 +178,7 @@
     <label class="check mt"><input id="proof" type="checkbox" checked> 정밀 글자 검수 (이미지 속 글자를 읽어 요청한 문구와 비교, 오타 확인) <small>(고급 모델 1회, 문구가 있을 때만)</small></label>
     <div id="cost" class="cost"></div>
     <button id="btnGen" class="primary" type="button">이미지 생성</button>
+    <button id="btnVideoDirect" class="primary alt mt" type="button" title="이미지를 만들지 않고 첨부 이미지나 프롬프트로 바로 영상을 만듭니다">🎬 바로 영상 만들기</button>
     <p id="status" class="status" role="status" aria-live="polite"></p>
   </section>
 
@@ -215,8 +216,22 @@
 <dialog id="videoDlg" aria-labelledby="vdTitle">
   <form method="dialog" class="dlgbody">
     <h2 id="vdTitle">🎬 동영상 만들기</h2>
-    <p class="hint">이 이미지를 첫 장면으로 MiniMax H3 Max가 움직이는 영상을 만듭니다 (eachlabs 경유).</p>
-    <img id="vdImg" class="vdimg" alt="첫 장면으로 쓸 이미지">
+    <p id="vdHint" class="hint"></p>
+    <div id="vdImgs" class="vdimgs"></div>
+    <div id="vdModeRow" class="field" hidden>
+      <span>이미지 사용 방식</span>
+      <label class="check"><input type="radio" name="vdMode" value="first" checked> 첫 장면으로 (첫 번째 사진이 그대로 움직임)</label>
+      <label class="check"><input type="radio" name="vdMode" value="ref"> 참고로 (인물·제품은 유지하고 새 장면 연출, 최대 9장)</label>
+    </div>
+    <label id="vdRatioRow" class="field" hidden><span>화면 비율</span>
+      <select id="vdRatio">
+        <option value="9:16">9:16 세로 (릴스·쇼츠)</option>
+        <option value="16:9" selected>16:9 가로 (유튜브)</option>
+        <option value="1:1">1:1 정사각형</option>
+        <option value="3:4">3:4 세로</option>
+        <option value="4:3">4:3 가로</option>
+        <option value="21:9">21:9 시네마</option>
+      </select></label>
     <section class="vassist" aria-labelledby="vaTitle">
       <h3 id="vaTitle">✨ 영상 프롬프트 도우미</h3>
       <label class="field"><span>원하는 장면 (한국어로 짧게, 선택)</span>

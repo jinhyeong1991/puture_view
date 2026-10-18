@@ -681,6 +681,8 @@ function renderGallery() {
       const p = document.createElement("div"); p.className = "pending"; p.textContent = `${e.label} 생성 중...`; card.append(p);
     } else if (e.error) {
       const p = document.createElement("div"); p.className = "pending"; p.textContent = `${e.label}: ${e.error}`; p.style.color = "var(--err)"; card.append(p);
+    } else if (e.isVideo) {
+      if (e.video) card.append(videoNode(e));
     } else {
       const im = document.createElement("img"); im.src = e.dataUrl; im.alt = `${e.label} 결과`; card.append(im);
     }
@@ -689,7 +691,7 @@ function renderGallery() {
     const info = document.createElement("span"); info.textContent = ` · ${e.ratio}${e.quality && e.quality !== "auto" ? " · " + e.quality : ""}${e.ms ? " · " + (e.ms / 1000).toFixed(1) + "초" : ""}${e.tag ? " · " + e.tag : ""}${e.roles ? " · 이미지 " + e.roles : ""}${e.comp ? (e.b64 === e.comp.b64 ? " · 원본 제품 합성" : " · AI 생성 그대로") : ""}${e.unchanged ? " · ⚠ 첨부 이미지와 거의 같음" : ""}`;
     const pr = document.createElement("div"); pr.className = "prompt"; pr.textContent = e.prompt;
     meta.append(b, info, pr); card.append(meta);
-    if (!e.pending && !e.error) {
+    if (!e.pending && !e.error && !e.isVideo) {
       const acts = document.createElement("div"); acts.className = "acts";
       const s = document.createElement("button"); s.type = "button"; s.textContent = "저장"; s.addEventListener("click", () => saveImage(e));
       const c = document.createElement("button"); c.type = "button"; c.textContent = "프롬프트 복사"; c.addEventListener("click", () => copyText(e.prompt, c));
@@ -976,7 +978,7 @@ function refreshDraftNote() {
  * 요청 -> predictionID -> 4초마다 상태 확인 -> 완료되면 카드에 영상 표시
  * ==================================================================== */
 const EACHLABS_API = "https://api.eachlabs.ai/v1";
-const VIDEO_MODEL = "minimax-h3-max-image-to-video";
+const VIDEO_MODELS = { first: "minimax-h3-max-image-to-video", ref: "minimax-h3-max-reference-to-video", text: "minimax-h3-max-text-to-video" };
 const VIDEO_USD_PER_SEC = { "480P": 0.0325, "768P": 0.052, "1080P": 0.104 };
 const VIDEO_DEFAULT_PROMPT = "Bring this image to life with subtle, natural motion and a slow cinematic camera push-in. Keep every person, product, logo and text exactly as in the image; no new objects, no morphing.";
 
@@ -1062,13 +1064,25 @@ function videoChoices() {
   };
 }
 
-function buildVideoSystem() {
+/* mode: first = 첫 장면 이미지 / ref = 참고 이미지(새 장면) / text = 이미지 없이 */
+function buildVideoSystem(mode) {
+  const head = mode === "ref"
+    ? ["You are a film director and prompt engineer for reference-to-video models (MiniMax H3). The attached images are REFERENCES (Image 1, Image 2, ...) for the people, products and characters that must appear; the scene, setting and action are new.",
+      "- Look at each reference image and describe briefly in analysis_ko who/what each one is, by number.",
+      "- Write ONE continuous shot in a new scene that features the referenced subjects, referring to them as Image 1, Image 2, ... in prompt_en. Split"]
+    : mode === "text"
+    ? ["You are a film director and prompt engineer for text-to-video models (MiniMax H3). There is no input image; the video is created from your prompt alone.",
+      "- Summarize in analysis_ko what the video will show, based on the user's idea.",
+      "- Write ONE continuous shot with a clear subject, setting, lighting and style. Split"]
+    : ["You are a film director and prompt engineer for image-to-video models (MiniMax H3). The attached image is the FIRST FRAME of the video.",
+      "- Look at the image carefully (people, product, character, text, background, light) and describe it briefly in analysis_ko.",
+      "- Write ONE continuous shot that starts exactly from this frame. Split"];
   return [
-    "You are a film director and prompt engineer for image-to-video models (MiniMax H3). The attached image is the FIRST FRAME of the video.",
+    head[0],
     "Return ONLY one valid JSON object, no markdown fences, no commentary.",
     "Rules:",
-    "- Look at the image carefully (people, product, character, text, background, light) and describe it briefly in analysis_ko.",
-    "- Write ONE continuous shot that starts exactly from this frame. Split the requested duration into 2-4 time beats (e.g. 0-2s, 2-4s, 4-5s) that add up to exactly the duration. Each beat says what moves, the camera, and any effect.",
+    head[1],
+    head[2] + " the requested duration into 2-4 time beats (e.g. 0-2s, 2-4s, 4-5s) that add up to exactly the duration. Each beat says what moves, the camera, and any effect.",
     "- Use the user's requested scene idea, camera move, effects and mood when given; when 'AI choice', pick what suits the image and say why in tips_ko.",
     "- Keep identity and design: the same faces, hairstyles, clothing, product shape, logo and any text stay unchanged and legible. No new people, no morphing, no extra limbs. Motion should be physically plausible and not too fast for the duration.",
     "- prompt_en: 60-140 words, present tense, starts with the subject and action, then the time beats, then camera, lighting/effects and mood, ending with the consistency constraints. No markdown.",
@@ -1086,7 +1100,8 @@ function buildVideoUser(o) {
   L.push(`Camera move: ${o.cam && o.cam.en ? o.cam.en : "AI choice"}`);
   L.push(`Effects: ${o.fx.length ? o.fx.map((f) => f.en).join("; ") : "AI choice (0-2 subtle effects)"}`);
   L.push(`Mood: ${o.mood && o.mood.en ? o.mood.en : "AI choice"}`);
-  if (o.imagePrompt) L.push(`The image was generated from this prompt (context only): ${o.imagePrompt.slice(0, 600)}`);
+  if (o.mode !== "first") L.push(`Aspect ratio: ${o.ratio}.`);
+  if (o.imagePrompt) L.push(`${o.mode === "first" ? "The image was generated from this prompt" : "The user's main prompt"} (context only): ${o.imagePrompt.slice(0, 600)}`);
   if (o.fix) {
     L.push("", "Current script (Korean):", o.curScript || "(none)", "Current prompt (Korean):", o.curKo || "(none)", "Current prompt (English):", o.curEn || "(none)");
     L.push(`Revision request from the user (Korean): ${o.fix}`);
@@ -1117,9 +1132,10 @@ function composeVideoLocal(o) {
 }
 
 let videoWriting = false;
-async function writeVideoPrompt(e, fix) {
+async function writeVideoPrompt(src, fix) {
   if (videoWriting) return;
-  const o = Object.assign(videoChoices(), { idea: $("vdIdea").value.trim(), duration: Number($("vdSec").value), resolution: $("vdRes").value, imagePrompt: e.prompt,
+  const mode = videoMode(src);
+  const o = Object.assign(videoChoices(), { mode, ratio: $("vdRatio").value, idea: $("vdIdea").value.trim(), duration: Number($("vdSec").value), resolution: $("vdRes").value, imagePrompt: src.context,
     fix, curScript: $("vdScript").value.trim(), curKo: $("vdPromptKo").value.trim(), curEn: $("vdPrompt").value.trim() });
   const say = (t, k) => { $("vdWriteStatus").textContent = t; $("vdWriteStatus").className = "status" + (k ? " " + k : ""); };
   if (!state.keys.gemini) {
@@ -1131,8 +1147,8 @@ async function writeVideoPrompt(e, fix) {
   videoWriting = true; $("btnVdWrite").disabled = true; $("btnVdFix").disabled = true;
   say(fix ? "요청대로 고치는 중... (10~20초)" : "이미지를 보고 대본을 쓰는 중... (10~20초)");
   try {
-    const img = await blobToResized(b64ToBlob(e.b64, e.mime), 1024);
-    const raw = await callAssist(state.keys.gemini, state.assistModel || "gemini-2.5-flash", buildVideoSystem(), buildVideoUser(o), [img]);
+    const imgs = await Promise.all(videoImages(src, mode).map((r) => blobToResized(b64ToBlob(r.b64, r.mime), 1024)));
+    const raw = await callAssist(state.keys.gemini, state.assistModel || "gemini-2.5-flash", buildVideoSystem(mode), buildVideoUser(o), imgs);
     const r = parseJsonLoose(raw) || {};
     if (!r.prompt_en) throw new Error("영상 프롬프트가 비어 있습니다. 다시 눌러 주세요.");
     $("vdScript").value = (r.analysis_ko ? `이미지: ${r.analysis_ko}\n\n` : "") + scriptText(r);
@@ -1156,18 +1172,57 @@ async function videoPromptToSend() {
   return String(r.prompt_en || "").trim() || ko;
 }
 
+/* 영상 재료: card = 결과 카드 이미지(첫 장면) / direct = 첨부 이미지나 프롬프트로 바로 */
+function videoMode(src) {
+  if (!src.images.length) return "text";
+  if (src.kind === "card") return "first";
+  const r = document.querySelector('input[name="vdMode"]:checked');
+  return r ? r.value : "first";
+}
+
+function videoImages(src, mode) { return mode === "text" ? [] : mode === "first" ? src.images.slice(0, 1) : src.images.slice(0, 9); }
+
+const VIDEO_MODE_LABEL = { first: "첫 장면", ref: "참고 이미지", text: "프롬프트만" };
+
 function openVideoDialog(e) {
+  openVideoFor({ kind: "card", key: e, entry: e, images: [{ mime: e.mime, b64: e.b64, dataUrl: e.dataUrl }], context: e.prompt });
+}
+
+/* 🎬 바로 영상 만들기: 이미지 생성 없이 첨부 이미지(🔒 제품 + 🎨 이미지) 또는 프롬프트만으로 */
+function openDirectVideo() {
+  const images = analysisRefs().map((r) => ({ mime: r.mime, b64: r.b64, dataUrl: r.dataUrl || `data:${r.mime};base64,${r.b64}` }));
+  const p = state.page;
+  if (!images.length && $("url").value.trim() && p && p.productImg && $("urlImg").checked) images.push(Object.assign({}, p.productImg.ref));
+  const context = $("prompt").value.trim();
+  openVideoFor({ kind: "direct", key: `direct:${images.map((i) => i.b64.length).join(",")}:${context.length}`, images, context });
+}
+
+function openVideoFor(src) {
   if (!state.keys.eachlabs) { setStatus("동영상은 eachlabs API 키가 필요합니다. ⚙ API 키 설정에서 입력하세요.", "err"); $("dlg").showModal(); return; }
   const dlg = $("videoDlg");
-  $("vdImg").src = e.dataUrl;
+  const direct = src.kind === "direct";
+  $("vdTitle").textContent = direct ? "🎬 바로 영상 만들기" : "🎬 동영상 만들기";
+  $("vdModeRow").hidden = !(direct && src.images.length);
+  const box = $("vdImgs"); box.textContent = ""; box.classList.toggle("many", src.images.length > 1);
+  src.images.forEach((r, i) => { const im = document.createElement("img"); im.src = r.dataUrl; im.alt = `영상 재료 이미지 ${i + 1}`; box.append(im); });
+  const showMode = () => {
+    const mode = videoMode(src);
+    $("vdRatioRow").hidden = mode === "first";
+    $("vdHint").textContent = mode === "text" ? "첨부 이미지 없이 프롬프트만으로 MiniMax H3 Max가 영상을 만듭니다 (eachlabs 경유). 🎨 칸에 사진을 넣으면 그 사진으로도 만들 수 있어요."
+      : mode === "ref" ? `첨부 이미지 ${Math.min(9, src.images.length)}장을 참고로 인물·제품은 유지하고 새 장면을 연출합니다 (MiniMax H3 Max · eachlabs).`
+      : `${direct ? "첫 번째 첨부 이미지" : "이 이미지"}를 첫 장면으로 MiniMax H3 Max가 움직이는 영상을 만듭니다 (eachlabs 경유).`;
+  };
+  showMode();
   renderVideoChips();
   $("vdWriteStatus").textContent = "";
-  // 카드마다 대본이 다르므로 다른 카드에서 열면 새로 씁니다
-  if (state.videoFor !== e) { state.videoFor = e; $("vdScript").value = ""; $("vdPromptKo").value = ""; $("vdPrompt").value = VIDEO_DEFAULT_PROMPT; state.vdSynced = null; }
-  $("btnVdWrite").onclick = () => writeVideoPrompt(e);
-  $("btnVdFix").onclick = () => { const f = $("vdFix").value.trim(); if (f) writeVideoPrompt(e, f); else $("vdFix").focus(); };
+  const reset = () => { $("vdScript").value = ""; $("vdPromptKo").value = ""; $("vdPrompt").value = VIDEO_DEFAULT_PROMPT; state.vdSynced = null; };
+  // 재료가 바뀌면(다른 카드, 다른 첨부 이미지) 대본을 새로 씁니다
+  if (state.videoFor !== src.key) { state.videoFor = src.key; reset(); }
+  document.querySelectorAll('input[name="vdMode"]').forEach((r) => (r.onchange = () => { showMode(); reset(); writeVideoPrompt(src); }));
+  $("btnVdWrite").onclick = () => writeVideoPrompt(src);
+  $("btnVdFix").onclick = () => { const f = $("vdFix").value.trim(); if (f) writeVideoPrompt(src, f); else $("vdFix").focus(); };
   $("vdFix").onkeydown = (ev) => { if (ev.key === "Enter") { ev.preventDefault(); $("btnVdFix").click(); } };
-  if (!$("vdScript").value.trim()) writeVideoPrompt(e);
+  if (!$("vdScript").value.trim()) writeVideoPrompt(src);
   const refresh = () => { $("vdCost").textContent = `예상 비용: ${videoCost($("vdRes").value, Number($("vdSec").value))} · 생성 시간 보통 3~6분`; };
   $("vdRes").onchange = refresh; $("vdSec").onchange = refresh; refresh();
   $("vdBalance").textContent = "잔액 확인 중...";
@@ -1175,9 +1230,17 @@ function openVideoDialog(e) {
   dlg.returnValue = "";
   dlg.addEventListener("close", async () => {
     if (dlg.returnValue !== "go") return;
-    const opt = { resolution: $("vdRes").value, duration: Number($("vdSec").value) };
-    try { opt.prompt = await videoPromptToSend(); } catch (err) { setStatus("프롬프트 번역 실패: " + (err.message || err) + " · 한국어 그대로 보냅니다.", "err"); opt.prompt = $("vdPromptKo").value.trim() || VIDEO_DEFAULT_PROMPT; }
-    startVideo(e, opt);
+    const mode = videoMode(src);
+    const opt = { resolution: $("vdRes").value, duration: Number($("vdSec").value), mode, ratio: $("vdRatio").value, images: videoImages(src, mode), promptKo: $("vdPromptKo").value.trim() };
+    try { opt.prompt = await videoPromptToSend(); } catch (err) { setStatus("프롬프트 번역 실패: " + (err.message || err) + " · 한국어 그대로 보냅니다.", "err"); opt.prompt = opt.promptKo || VIDEO_DEFAULT_PROMPT; }
+    let target = src.entry;
+    if (!target) {
+      // 바로 만든 영상은 결과에 영상 카드로 추가
+      target = { label: "MiniMax H3 Max 영상", model: VIDEO_MODELS[mode], prompt: opt.promptKo || opt.prompt, ratio: mode === "first" ? "사진 비율" : opt.ratio,
+        time: Date.now(), isVideo: true, tag: `바로 영상 · ${VIDEO_MODE_LABEL[mode]}` };
+      state.history.unshift(target);
+    }
+    startVideo(target, opt);
   }, { once: true });
   dlg.showModal();
 }
@@ -1186,12 +1249,14 @@ async function startVideo(e, o) {
   e.video = { status: "running", started: Date.now(), resolution: o.resolution, duration: o.duration, note: "요청 보내는 중..." };
   renderGallery();
   try {
-    // 화면에 보이는 결과(제품 합성본이면 합성본)를 첫 장면으로 보냅니다
-    const first = await blobToResized(b64ToBlob(e.b64, e.mime), 1536);
-    const j = await eachlabsFetch("/prediction", { method: "POST", body: JSON.stringify({
-      model: VIDEO_MODEL, version: "1.0.0",
-      input: { prompt: o.prompt, image_url: first.dataUrl, duration: o.duration, resolution: o.resolution, prompt_expansion_mode: "balanced", enable_safety_checker: true },
-    }) });
+    const mode = o.mode || "first";
+    const input = { prompt: o.prompt, duration: o.duration, resolution: o.resolution, prompt_expansion_mode: "balanced", enable_safety_checker: true };
+    // 이미지는 data URI로 보냅니다 (결과 카드면 화면에 보이는 이미지, 제품 합성본이면 합성본)
+    const imgs = o.images || [{ mime: e.mime, b64: e.b64 }];
+    const urls = await Promise.all(imgs.map(async (r) => (await blobToResized(b64ToBlob(r.b64, r.mime), 1536)).dataUrl));
+    if (mode === "first") input.image_url = urls[0];
+    else { input.aspect_ratio = o.ratio; if (mode === "ref") input.reference_image_urls = urls.slice(0, 9); }
+    const j = await eachlabsFetch("/prediction", { method: "POST", body: JSON.stringify({ model: VIDEO_MODELS[mode], version: "1.0.0", input }) });
     const id = j.predictionID || j.id;
     if (!id) throw new Error("eachlabs가 작업 번호를 돌려주지 않았습니다. " + JSON.stringify(j).slice(0, 200));
     e.video.id = id; e.video.note = "대기 중";
@@ -1939,6 +2004,7 @@ async function init() {
   $("btnAutoPrompt").addEventListener("click", () => runAutoPrompt("button"));
 
   $("btnGen").addEventListener("click", () => onGenerate());
+  $("btnVideoDirect").addEventListener("click", openDirectVideo);
   $("drafts").addEventListener("change", refreshDraftNote);
   refreshDraftNote();
   $("btnClear").addEventListener("click", () => { state.history = []; renderGallery(); });

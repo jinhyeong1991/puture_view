@@ -174,3 +174,6 @@ dialog::backdrop { background:rgba(0,0,0,.45); }
 .vassist { border:1px solid var(--line); border-radius:10px; padding:10px 12px; margin:6px 0 10px; background:var(--bg); }
 .vassist h3 { margin:0 0 6px; font-size:14px; }
 .vassist .primary { margin-top:4px; }
+.vdimgs { display:flex; flex-wrap:wrap; justify-content:center; gap:6px; margin:0 0 10px; }
+.vdimgs img { max-height:180px; max-width:100%; border-radius:8px; border:1px solid var(--line); }
+.vdimgs.many img { width:84px; height:84px; object-fit:cover; }
