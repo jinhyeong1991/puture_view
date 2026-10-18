@@ -153,6 +153,27 @@
       </label>
     </div>
 
+    <div class="field mt">
+      <span>여러 비율 동시 생성 (선택)</span>
+      <div id="multiRatio" class="ratiochecks">
+        <label><input type="checkbox" value="1:1"> 1:1</label>
+        <label><input type="checkbox" value="3:4"> 3:4 포스터</label>
+        <label><input type="checkbox" value="4:5"> 4:5 피드</label>
+        <label><input type="checkbox" value="9:16"> 9:16 스토리</label>
+        <label><input type="checkbox" value="4:3"> 4:3</label>
+        <label><input type="checkbox" value="16:9"> 16:9 썸네일</label>
+      </div>
+      <small>체크하지 않으면 위 '화면 비율' 하나로 만듭니다. 제품 자리는 비율마다 다시 잡습니다.</small>
+    </div>
+    <label class="field"><span>시안 장수</span>
+      <select id="drafts">
+        <option value="1" selected>1장 (선택한 모델로 바로)</option>
+        <option value="2">2장 시안 (저렴한 모델) → 골라서 고화질</option>
+        <option value="4">4장 시안 (저렴한 모델) → 골라서 고화질</option>
+      </select>
+      <small id="draftNote"></small>
+    </label>
+    <label class="check"><input id="previewFirst" type="checkbox" checked> 생성 전 미리보기로 확인 (보낼 이미지·역할·장수·예상 비용)</label>
     <label class="check mt"><input id="autoReview" type="checkbox" checked> 생성 후 사진관 해설 · 항목별 점수 · 후속 제안(Q1~Q3) 자동 실행 <small>(텍스트 호출 1회, 수 원)</small></label>
     <label class="check mt"><input id="proof" type="checkbox" checked> 정밀 글자 검수 (이미지 속 글자를 읽어 요청한 문구와 비교, 오타 확인) <small>(고급 모델 1회, 문구가 있을 때만)</small></label>
     <div id="cost" class="cost"></div>
@@ -185,6 +206,20 @@
     <div class="dlgactions">
       <button value="cancel" class="ghost" type="submit">닫기</button>
       <button id="btnSave" class="primary" value="save" type="submit">저장</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="previewDlg" aria-labelledby="pvTitle">
+  <form method="dialog" class="dlgbody">
+    <h2 id="pvTitle">생성 전 확인</h2>
+    <div id="pvSummary" class="pvsum"></div>
+    <div id="pvRefs" class="pvrefs"></div>
+    <ul id="pvWarn" class="pvwarn"></ul>
+    <details class="pvdetails"><summary>실제로 보낼 프롬프트 보기</summary><pre id="pvPrompt" class="pvprompt"></pre></details>
+    <div class="dlgactions">
+      <button value="cancel" class="ghost" type="submit">취소</button>
+      <button id="pvGo" value="go" class="primary" type="submit">생성</button>
     </div>
   </form>
 </dialog>

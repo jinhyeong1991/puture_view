@@ -147,3 +147,18 @@ dialog::backdrop { background:rgba(0,0,0,.45); }
 .dlgactions { display:flex; justify-content:flex-end; gap:8px; }
 .dlgactions .primary { width:auto; padding:9px 18px; }
 @media (prefers-reduced-motion: reduce) { * { scroll-behavior:auto !important; transition:none !important; animation:none !important; } }
+
+/* 여러 비율 · 미리보기 */
+.ratiochecks { display:flex; flex-wrap:wrap; gap:6px 14px; margin:4px 0; }
+.ratiochecks label { display:flex; align-items:center; gap:4px; font-size:13px; cursor:pointer; }
+.pvsum { display:grid; gap:4px; font-size:14px; margin-bottom:12px; }
+.pvsum b { display:inline-block; min-width:64px; color:var(--sub); font-weight:600; }
+.pvrefs { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:10px; }
+.pvrefs figure { margin:0; width:92px; }
+.pvrefs img { width:92px; height:92px; object-fit:cover; border-radius:8px; border:1px solid var(--line); display:block; }
+.pvrefs figcaption { font-size:12px; text-align:center; margin-top:3px; }
+.pvwarn { margin:0 0 10px; padding-left:18px; font-size:13px; color:var(--err); }
+.pvwarn li.ok { color:var(--ok); }
+.pvdetails { margin-bottom:12px; font-size:13px; }
+.pvprompt { white-space:pre-wrap; max-height:220px; overflow:auto; font-size:12px; background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:8px; }
+.acts .up { font-weight:700; }

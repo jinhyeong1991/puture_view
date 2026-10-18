@@ -22,13 +22,13 @@ const store = {
 const DEFAULT_QWEN_BASE = "https://ap-southeast-1.maas.qwencloudapi.com";
 
 const MODELS = [
-  { id: "gemini-3.1-flash-image", provider: "gemini", label: "Gemini 3.1 Flash Image", cost: "1K 약 $0.067 / 2K 약 $0.10", note: "한글 문구가 정확한 편, 참조 이미지 지원" },
-  { id: "gemini-3-pro-image", provider: "gemini", label: "Gemini 3 Pro Image", cost: "약 $0.13", note: "고품질, 비용 높음" },
-  { id: "gemini-2.5-flash-image", provider: "gemini", label: "Gemini 2.5 Flash Image", cost: "약 $0.04 (제3자 자료)", note: "구형. 단종됐을 수 있음" },
+  { id: "gemini-3.1-flash-image", usd: 0.067, usd2k: 0.10, provider: "gemini", label: "Gemini 3.1 Flash Image", cost: "1K 약 $0.067 / 2K 약 $0.10", note: "한글 문구가 정확한 편, 참조 이미지 지원" },
+  { id: "gemini-3-pro-image", usd: 0.13, provider: "gemini", label: "Gemini 3 Pro Image", cost: "약 $0.13", note: "고품질, 비용 높음" },
+  { id: "gemini-2.5-flash-image", usd: 0.04, provider: "gemini", label: "Gemini 2.5 Flash Image", cost: "약 $0.04 (제3자 자료)", note: "구형. 단종됐을 수 있음" },
   { id: "gemini-nano-banana-2.1", provider: "gemini", label: "Gemini Nano Banana 2.1", cost: "확인 필요", note: "목록에서만 확인한 모델(미검증)" },
-  { id: "qwen-image-3.0", provider: "qwen", label: "Qwen-Image-3.0", cost: "약 $0.03 + 입력 이미지 장당 $0.003", note: "저렴. 한글 글자가 가끔 틀림" },
-  { id: "qwen-image-3.0-pro", provider: "qwen", label: "Qwen-Image-3.0 Pro", cost: "약 $0.04~0.05", note: "한글 정확도·사진 품질 좋음" },
-  { id: "gpt-image-2.5-sunburst", provider: "openai", label: "GPT Image 2.5 Sunburst", cost: "약 $0.07 (high, 1024 기준 참고값)", note: "사진 느낌 가장 자연스러움, 정밀 편집" },
+  { id: "qwen-image-3.0", usd: 0.03, provider: "qwen", label: "Qwen-Image-3.0", cost: "약 $0.03 + 입력 이미지 장당 $0.003", note: "저렴. 한글 글자가 가끔 틀림" },
+  { id: "qwen-image-3.0-pro", usd: 0.045, provider: "qwen", label: "Qwen-Image-3.0 Pro", cost: "약 $0.04~0.05", note: "한글 정확도·사진 품질 좋음" },
+  { id: "gpt-image-2.5-sunburst", usd: 0.07, provider: "openai", label: "GPT Image 2.5 Sunburst", cost: "약 $0.07 (high, 1024 기준 참고값)", note: "사진 느낌 가장 자연스러움, 정밀 편집" },
   { id: "gpt-image-2.5-flare", provider: "openai", label: "GPT Image 2.5 Flare", cost: "확인 필요", note: "기본형, 더 빠름" },
   { id: "gpt-image-2", provider: "openai", label: "GPT Image 2", cost: "확인 필요", note: "이전 세대" },
   { id: "gpt-image-1.5", provider: "openai", label: "GPT Image 1.5", cost: "확인 필요", note: "이전 세대" },
@@ -203,6 +203,8 @@ const LOCKED_ROLES = [
     en: "PROTECTED PRODUCT - reproduce this product exactly: same shape, proportions, colors, materials, logo and lettering. Do not redesign, stylize or distort it; adjust only lighting, perspective and scale so it fits." },
   { id: "plate", label: "제품 자리", ko: "제품이 최종 위치에 놓인 레이아웃 판",
     en: "PRODUCT LAYOUT PLATE - the protected product is already at its final position and size on a gray placeholder; follow the product lock rules below." },
+  { id: "draft", label: "선택한 시안", ko: "고화질로 다시 만들 시안",
+    en: "CHOSEN DRAFT - the approved draft. Recreate exactly this composition, poses, framing, colors and text placement at higher fidelity and finer detail; do not redesign it." },
 ];
 
 function roleOf(r) { return REF_ROLES.concat(LOCKED_ROLES).find((x) => x.id === (r && r.role)) || REF_ROLES[0]; }
@@ -674,7 +676,7 @@ function renderGallery() {
     }
     const meta = document.createElement("div"); meta.className = "meta";
     const b = document.createElement("b"); b.textContent = e.label;
-    const info = document.createElement("span"); info.textContent = ` · ${e.ratio}${e.quality && e.quality !== "auto" ? " · " + e.quality : ""}${e.ms ? " · " + (e.ms / 1000).toFixed(1) + "초" : ""}${e.roles ? " · 이미지 " + e.roles : ""}${e.comp ? (e.b64 === e.comp.b64 ? " · 원본 제품 합성" : " · AI 생성 그대로") : ""}${e.unchanged ? " · ⚠ 첨부 이미지와 거의 같음" : ""}`;
+    const info = document.createElement("span"); info.textContent = ` · ${e.ratio}${e.quality && e.quality !== "auto" ? " · " + e.quality : ""}${e.ms ? " · " + (e.ms / 1000).toFixed(1) + "초" : ""}${e.tag ? " · " + e.tag : ""}${e.roles ? " · 이미지 " + e.roles : ""}${e.comp ? (e.b64 === e.comp.b64 ? " · 원본 제품 합성" : " · AI 생성 그대로") : ""}${e.unchanged ? " · ⚠ 첨부 이미지와 거의 같음" : ""}`;
     const pr = document.createElement("div"); pr.className = "prompt"; pr.textContent = e.prompt;
     meta.append(b, info, pr); card.append(meta);
     if (!e.pending && !e.error) {
@@ -684,6 +686,11 @@ function renderGallery() {
       const r = document.createElement("button"); r.type = "button"; r.textContent = "참조로 사용";
       r.addEventListener("click", () => { addRefBlobs([b64ToBlob(e.b64, e.mime)], true, "subject"); setStatus("결과 이미지를 참조 이미지에 추가했습니다.", "ok"); });
       acts.append(s, c, r);
+      if (e.draft && e.job) {
+        const u = document.createElement("button"); u.type = "button"; u.className = "up"; u.textContent = "⬆ 고화질로";
+        u.title = "이 시안을 선택한 모델 · 최고 화질로 다시 만듭니다"; u.addEventListener("click", () => upgradeEntry(e));
+        acts.append(u);
+      }
       if (e.raw && e.comp) {
         const showingRaw = e.b64 === e.raw.b64;
         const t = document.createElement("button"); t.type = "button"; t.textContent = showingRaw ? "원본 제품 합성본 보기" : "AI 생성 그대로 보기";
@@ -715,71 +722,236 @@ function refreshModelUi() {
   $("qualLabel").textContent = q.label;
   $("qualNote").textContent = q.note;
   $("ratioNote").textContent = ratioNote(prov, $("ratio").value);
+  if ($("draftNote")) refreshDraftNote();
   const costText = meta ? meta.cost : "";
   $("cost").textContent = `예상 비용(대략, 1장 기준): ${costText}. 가격은 변동될 수 있으니 각 사 요금표를 확인하세요. 참조 이미지를 넣으면 입력 비용이 조금 더 붙습니다.`;
 }
 
-async function onGenerate() {
-  if (state.busy) return;
-  const m = currentModel();
-  const userPrompt = $("prompt").value.trim();
-  if (!m.id) { setStatus("모델명을 입력해 주세요.", "err"); return; }
-  if (!userPrompt) { setStatus("프롬프트를 입력해 주세요.", "err"); return; }
+/* ====================================================================
+ * 생성: 요청 만들기 -> (미리보기 확인) -> 여러 장을 3개씩 동시에 생성
+ * 시안은 저렴한 모델로 여러 장, 고른 시안만 선택한 모델·최고 화질로 다시 만듭니다.
+ * ==================================================================== */
+const USD_KRW = 1400;
+
+function selectedRatios() {
+  const picked = Array.from(document.querySelectorAll("#multiRatio input:checked")).map((x) => x.value);
+  return picked.length ? picked : [$("ratio").value];
+}
+
+/* 시안용 저렴한 모델·화질 */
+function draftPick(prov, mm) {
+  const find = (id) => Object.assign({}, MODELS.find((m) => m.id === id));
+  if (prov === "gemini") return { model: find("gemini-3.1-flash-image"), quality: "1K" };
+  if (prov === "qwen") return { model: find("qwen-image-3.0"), quality: "auto" };
+  if (prov === "openai") return { model: mm, quality: "low" };
+  return { model: mm, quality: $("quality").value };
+}
+
+function hqQuality(prov) { return prov === "gemini" ? "2K" : prov === "openai" ? "high" : "auto"; }
+
+function unitUsd(modelId, quality) {
+  const m = MODELS.find((x) => x.id === modelId);
+  if (!m || m.usd == null) return null;
+  return quality === "2K" && m.usd2k ? m.usd2k : m.usd;
+}
+
+function costText(jobs) {
+  let usd = 0, unknown = false;
+  jobs.forEach((j) => { const u = unitUsd(j.model.id, j.quality); if (u == null) unknown = true; else usd += u; });
+  if (!usd) return "가격 확인 필요";
+  return `약 $${usd.toFixed(2)} (≈ ${(Math.round((usd * USD_KRW) / 10) * 10).toLocaleString()}원)${unknown ? " + 일부 모델 가격 확인 필요" : ""}`;
+}
+
+/* 한 장을 만들 요청: 보낼 이미지(제품 판은 비율마다 새로), 역할 가이드가 붙은 프롬프트 */
+async function buildRequest(o) {
+  const src = productSource();
+  const srcRef = src ? Object.assign({}, src.ref || src, { role: "product" }) : null;
+  let lock = null; let lockNote = ""; let head = srcRef ? [srcRef] : [];
+  if (src && $("lockProduct").checked) {
+    if (!src.cut) src.cut = await makeCutout(src.blob);
+    if (src.cut.ok) {
+      // 판에 이미 제품이 들어 있으므로 제품 원본은 따로 보내지 않아 입력 토큰을 아낍니다.
+      const plate = makePlate(src.cut, outputAspect(o.prov, o.ratio));
+      head = [Object.assign(plate.ref, { role: "plate" })];
+      lock = { cut: src.cut, rect: plate.rect };
+    } else lockNote = src.cut.reason;
+  }
+  const extra = o.extra || [];
+  const free = state.refs.slice(0, Math.max(0, MAX_REFS - head.length - extra.length));
+  const refs = head.concat(free, extra);
+  let prompt = withRefGuide(composePrompt(o.userPrompt, o.page, $("urlMode").value), refs, $("harmonize").checked) + (lock ? "\n" + LOCK_PROMPT : "");
+  if (o.variation && o.variation.n > 1) prompt += `\n\n[Variation ${o.variation.k} of ${o.variation.n}] Explore a clearly different composition, camera angle and color mood from the other variations while keeping every rule above.`;
+  return { refs, prompt, lock, lockNote, reviewRefs: (srcRef ? [srcRef] : []).concat(state.refs).slice(0, 2) };
+}
+
+async function runJob(job) {
+  const req = job.req;
+  const entry = { label: job.model.label || job.model.id, model: job.model.id, prompt: job.userPrompt, ratio: job.ratio, quality: job.quality, pending: true, time: Date.now(),
+    tag: job.tag, draft: job.draft, job: { userPrompt: job.userPrompt, ratio: job.ratio, page: job.page } };
+  if (req.refs.length) entry.roles = req.refs.map((r, i) => `${i + 1}:${roleOf(r).label}`).join(" ");
+  state.history.unshift(entry); renderGallery();
+  try {
+    const t0 = Date.now();
+    let img = await generate(job.model, req.prompt, req.refs, job.ratio, job.quality);
+    // 모델이 보낸 이미지를 거의 그대로 돌려줬는지 확인 (그 위에 원본을 또 합성하면 첨부 이미지와 똑같아 보입니다)
+    if (req.refs.length) {
+      try { entry.unchanged = (await imageDiff(img, req.refs[0])) < UNCHANGED_DIFF; } catch (e) { /* 비교 실패는 무시 */ }
+    }
+    if (req.lock && !entry.unchanged) {
+      entry.raw = { mime: img.mime, b64: img.b64 };
+      img = await compositeProduct(img, req.lock.cut, req.lock.rect);
+      entry.comp = { mime: img.mime, b64: img.b64 };
+    }
+    entry.ms = Date.now() - t0; entry.mime = img.mime; entry.b64 = img.b64; entry.dataUrl = `data:${img.mime};base64,${img.b64}`;
+    entry.refs = req.reviewRefs;
+  } catch (e) { entry.error = e.message || String(e); }
+  entry.pending = false; renderGallery();
+  // 시안은 해설을 건너뛰어 비용을 아낍니다 (고화질로 다시 만든 결과만 해설)
+  if (entry.b64 && !entry.unchanged && !entry.draft && $("autoReview") && $("autoReview").checked && state.keys.gemini) runReview(entry);
+  return entry;
+}
+
+async function runPool(tasks, n) {
+  let i = 0;
+  const worker = async () => { while (i < tasks.length) { const t = tasks[i++]; await t(); } };
+  await Promise.all(Array.from({ length: Math.min(n, tasks.length) }, worker));
+}
+
+/* ① 생성 전 미리보기: 보낼 이미지·역할·장수·예상 비용·경고·실제 프롬프트를 보여 주고 확인받습니다 */
+function showPreview(jobs) {
+  const j0 = jobs[0]; const refs = j0.req.refs;
+  const ratios = [...new Set(jobs.map((j) => j.ratio))];
+  const perRatio = jobs.length / ratios.length;
+  $("pvSummary").textContent = "";
+  [
+    ["모델", `${j0.model.label || j0.model.id} · ${j0.quality}${j0.draft ? " (시안용 저렴한 설정)" : ""}`],
+    ["비율", ratios.join(", ")],
+    ["장수", `${ratios.length}개 비율 × ${perRatio}장 = 총 ${jobs.length}장`],
+    ["예상 비용", costText(jobs)],
+  ].forEach(([k, v]) => { const d = document.createElement("div"); const b = document.createElement("b"); b.textContent = k; d.append(b, " " + v); $("pvSummary").append(d); });
+
+  const box = $("pvRefs"); box.textContent = "";
+  refs.forEach((r, i) => {
+    const f = document.createElement("figure");
+    const im = document.createElement("img"); im.src = r.dataUrl || `data:${r.mime};base64,${r.b64}`; im.alt = `보낼 이미지 ${i + 1}`;
+    const c = document.createElement("figcaption"); c.textContent = `${i + 1} · ${roleOf(r).label}`; c.title = roleOf(r).ko;
+    f.append(im, c); box.append(f);
+  });
+  if (!refs.length) { const p = document.createElement("p"); p.className = "hint"; p.textContent = "첨부 이미지 없이 프롬프트만으로 생성합니다."; box.append(p); }
+
+  const warn = [];
+  if (j0.req.lock) warn.push(["ok", "🔒 제품은 생성 후 원본 픽셀로 같은 자리에 다시 합성됩니다."]);
+  if (j0.req.lockNote) warn.push(["", j0.req.lockNote]);
+  if (state.refs.length && !/image\s*\d|이미지|사진|photo|picture/i.test(j0.userPrompt)) warn.push(["", "프롬프트에 첨부 이미지 이야기가 없습니다. 이미지가 무시될 수 있으니 '1번 이미지의 사람이…'처럼 적거나 ✨ 자동 작성을 다시 눌러 보세요."]);
+  if (jobs.length >= 8) warn.push(["", `한 번에 ${jobs.length}장을 만듭니다. 비용을 다시 확인하세요.`]);
+  $("pvWarn").textContent = "";
+  warn.forEach(([k, t]) => { const li = document.createElement("li"); if (k) li.className = k; li.textContent = t; $("pvWarn").append(li); });
+  $("pvPrompt").textContent = j0.req.prompt;
+  $("pvGo").textContent = `${jobs.length}장 생성`;
+
+  const dlg = $("previewDlg");
+  return new Promise((resolve) => {
+    dlg.returnValue = "";
+    dlg.addEventListener("close", () => resolve(dlg.returnValue === "go"), { once: true });
+    dlg.showModal();
+  });
+}
+
+function finishStatus(results, single) {
+  const ok = results.filter((e) => e.b64), errs = results.filter((e) => e.error), same = results.filter((e) => e.unchanged);
+  const note = single && single.lockNote;
+  if (!ok.length && errs.length) return setStatus(errs[0].error, "err");
+  if (results.length === 1) {
+    const e = results[0];
+    if (e.unchanged) return setStatus("모델이 첨부 이미지를 거의 바꾸지 않고 돌려줬습니다. 프롬프트에 배경·장면·구도를 구체적으로 적거나, 다른 모델로 시도해 보세요.", "err");
+    return setStatus(note ? `완료! (${note})` : single && single.lock ? "완료! 원본 제품 이미지를 같은 자리에 합성했습니다." : "완료!", "ok");
+  }
+  const parts = [`완료! ${ok.length}/${results.length}장 생성`];
+  if (errs.length) parts.push(`실패 ${errs.length}장 (${errs[0].error.slice(0, 60)})`);
+  if (same.length) parts.push(`첨부 이미지와 거의 같음 ${same.length}장`);
+  if (results.some((e) => e.draft)) parts.push("마음에 드는 시안의 '⬆ 고화질로'를 누르세요");
+  if (note) parts.push(note);
+  setStatus(parts.join(" · "), errs.length || same.length ? "err" : "ok");
+}
+
+function checkModel(m) {
+  if (!m.id) { setStatus("모델명을 입력해 주세요.", "err"); return null; }
   const prov = m.provider === "custom" ? $("customProvider").value : m.provider;
-  const mm = Object.assign({}, m, { provider: prov });
-  if (!state.keys[prov]) { setStatus(`${PROVIDER_LABEL[prov]} API 키가 없습니다. ⚙ API 키 설정에서 입력하세요.`, "err"); $("dlg").showModal(); return; }
+  if (!state.keys[prov]) { setStatus(`${PROVIDER_LABEL[prov]} API 키가 없습니다. ⚙ API 키 설정에서 입력하세요.`, "err"); $("dlg").showModal(); return null; }
+  return { prov, mm: Object.assign({}, m, { provider: prov }) };
+}
+
+/* opts.auto: 자동 생성(1장일 때만 미리보기 생략) · opts.single: 후속 제안처럼 이미 확인받은 1장 */
+async function onGenerate(opts = {}) {
+  if (state.busy) return;
+  const userPrompt = $("prompt").value.trim();
+  if (!userPrompt) { setStatus("프롬프트를 입력해 주세요.", "err"); return; }
+  const ck = checkModel(currentModel()); if (!ck) return;
+  const { prov, mm } = ck;
+  const ratios = opts.single ? [$("ratio").value] : selectedRatios();
+  const n = opts.single ? 1 : Number($("drafts").value) || 1;
+  const pick = n > 1 ? draftPick(prov, mm) : { model: mm, quality: $("quality").value };
 
   state.busy = true; $("btnGen").disabled = true;
-  const entry = { label: mm.label || mm.id, model: mm.id, prompt: userPrompt, ratio: $("ratio").value, quality: $("quality").value, pending: true, time: Date.now() };
   try {
     let page = null;
     if ($("url").value.trim()) {
       setStatus("URL을 불러오는 중...");
       try { page = await ensureUrlLoaded(); showUrlInfo(page); } catch (e) { setStatus("URL을 읽지 못해 URL 없이 진행합니다. (" + e.message + ")"); }
     }
-    const src = productSource();
-    const srcRef = src ? Object.assign({}, src.ref || src, { role: "product" }) : null;
-    const free = state.refs.slice(0, src ? MAX_FREE : MAX_REFS);
-    let lock = null; let lockNote = ""; let head = srcRef ? [srcRef] : [];
-    const reviewRefs = head.concat(free).slice(0, 2);
-    if (src && $("lockProduct").checked) {
-      if (!src.cut) src.cut = await makeCutout(src.blob);
-      if (src.cut.ok) {
-        // 판에 이미 제품이 들어 있으므로 제품 원본은 따로 보내지 않아 입력 토큰을 아낍니다.
-        const plate = makePlate(src.cut, outputAspect(prov, entry.ratio));
-        head = [Object.assign(plate.ref, { role: "plate" })];
-        lock = { cut: src.cut, rect: plate.rect };
-      } else lockNote = src.cut.reason;
+    const jobs = [];
+    for (const ratio of ratios) {
+      for (let k = 1; k <= n; k++) {
+        const req = await buildRequest({ prov, ratio, userPrompt, page, variation: { k, n } });
+        const tag = [n > 1 ? `시안 ${k}/${n}` : "", ratios.length > 1 ? ratio : ""].filter(Boolean).join(" · ");
+        jobs.push({ model: pick.model, quality: pick.quality, ratio, userPrompt, page, req, draft: n > 1, tag });
+      }
     }
-    const refs = head.concat(free);
-    const prompt = withRefGuide(composePrompt(userPrompt, page, $("urlMode").value), refs, $("harmonize").checked) + (lock ? "\n" + LOCK_PROMPT : "");
-    if (refs.length) entry.roles = refs.map((r, i) => `${i + 1}:${roleOf(r).label}`).join(" ");
-    state.history.unshift(entry); renderGallery();
-    setStatus(`${entry.label}로 생성 중... (10~90초)${lockNote ? " · " + lockNote : ""}`);
-    const t0 = Date.now();
-    let img = await generate(mm, prompt, refs, entry.ratio, entry.quality);
-    // 모델이 보낸 이미지를 거의 그대로 돌려줬는지 확인 (그 위에 원본을 또 합성하면 첨부 이미지와 똑같아 보입니다)
-    if (refs.length) {
-      try { entry.unchanged = (await imageDiff(img, refs[0])) < UNCHANGED_DIFF; } catch (e) { /* 비교 실패는 무시 */ }
-    }
-    if (lock && !entry.unchanged) {
-      entry.raw = { mime: img.mime, b64: img.b64 };
-      img = await compositeProduct(img, lock.cut, lock.rect);
-      entry.comp = { mime: img.mime, b64: img.b64 };
-    }
-    entry.pending = false; entry.ms = Date.now() - t0; entry.mime = img.mime; entry.b64 = img.b64; entry.dataUrl = `data:${img.mime};base64,${img.b64}`;
-    entry.refs = reviewRefs;
-    if (entry.unchanged) setStatus("모델이 첨부 이미지를 거의 바꾸지 않고 돌려줬습니다. 프롬프트에 배경·장면·구도를 구체적으로 적거나, 다른 모델로 시도해 보세요.", "err");
-    else setStatus(lockNote ? `완료! (${lockNote})` : lock ? "완료! 원본 제품 이미지를 같은 자리에 합성했습니다." : "완료!", "ok");
+    const skipPreview = opts.single || (opts.auto && jobs.length === 1) || !$("previewFirst").checked;
+    if (!skipPreview && !(await showPreview(jobs))) { setStatus("생성을 취소했습니다."); return; }
+    let done = 0;
+    setStatus(`${pick.model.label || pick.model.id}로 ${jobs.length}장 생성 중... (10~90초)${jobs[0].req.lockNote ? " · " + jobs[0].req.lockNote : ""}`);
+    const results = [];
+    await runPool(jobs.map((j) => async () => {
+      results.push(await runJob(j)); done++;
+      if (done < jobs.length) setStatus(`생성 중... ${done}/${jobs.length}장 완료`);
+    }), 3);
+    finishStatus(results, jobs[0].req);
     await store.set({ last: { model: $("model").value, ratio: $("ratio").value, quality: $("quality").value, customProvider: $("customProvider").value, customModel: $("customModel").value } });
   } catch (e) {
-    entry.pending = false; entry.error = e.message || String(e);
-    if (!state.history.includes(entry)) state.history.unshift(entry);
-    setStatus(entry.error, "err");
+    setStatus(e.message || String(e), "err");
   } finally {
     state.busy = false; $("btnGen").disabled = false; renderGallery();
   }
-  if (entry.b64 && !entry.unchanged && $("autoReview") && $("autoReview").checked && state.keys.gemini) runReview(entry);
+}
+
+/* ② 고른 시안을 선택한 모델·최고 화질로 다시 만들기 (시안을 '선택한 시안' 역할로 함께 보냄) */
+async function upgradeEntry(e) {
+  if (state.busy || !e.job) return;
+  const ck = checkModel(currentModel()); if (!ck) return;
+  const { prov, mm } = ck;
+  const src = e.raw || e; // 제품 합성 전 이미지를 보내고, 결과에는 원본 제품을 다시 합성
+  const draftRef = { mime: src.mime, b64: src.b64, dataUrl: `data:${src.mime};base64,${src.b64}`, role: "draft" };
+  state.busy = true; $("btnGen").disabled = true;
+  try {
+    const req = await buildRequest({ prov, ratio: e.ratio, userPrompt: e.job.userPrompt, page: e.job.page, extra: [draftRef] });
+    const job = { model: mm, quality: hqQuality(prov), ratio: e.ratio, userPrompt: e.job.userPrompt, page: e.job.page, req, draft: false, tag: "고화질" + (e.tag ? ` (${e.tag})` : "") };
+    if ($("previewFirst").checked && !(await showPreview([job]))) { setStatus("생성을 취소했습니다."); return; }
+    setStatus(`${mm.label || mm.id} · ${job.quality}로 고화질 생성 중... (10~90초)`);
+    finishStatus([await runJob(job)], req);
+  } catch (err) {
+    setStatus(err.message || String(err), "err");
+  } finally {
+    state.busy = false; $("btnGen").disabled = false; renderGallery();
+  }
+}
+
+function refreshDraftNote() {
+  const n = Number($("drafts").value) || 1;
+  const m = currentModel(); const prov = m.provider === "custom" ? $("customProvider").value : m.provider;
+  if (n === 1) { $("draftNote").textContent = "선택한 모델·화질로 바로 만듭니다."; return; }
+  const p = draftPick(prov, m);
+  $("draftNote").textContent = `시안은 ${p.model.label || p.model.id} · ${p.quality}로 구도를 다르게 ${n}장 만들고, 고른 시안만 '⬆ 고화질로'를 눌러 선택한 모델 · ${hqQuality(prov)}로 다시 만듭니다.`;
 }
 
 /* ====================================================================
@@ -950,7 +1122,7 @@ function startAutoGenerate() {
   $("autoBanner").hidden = false; render();
   countdownTimer = setInterval(() => {
     left--;
-    if (left <= 0) { cancelCountdown(); state.autoCount++; onGenerate(); } else render();
+    if (left <= 0) { cancelCountdown(); state.autoCount++; onGenerate({ auto: true }); } else render();
   }, 1000);
 }
 
@@ -1281,7 +1453,7 @@ async function applyFollowup(entry, f, generateNow, useRef) {
   if (!generateNow) { setStatus(`${f.id} 제안 프롬프트를 입력칸에 넣었습니다. 고친 뒤 '이미지 생성'을 누르세요.`, "ok"); window.scrollTo({ top: 0, behavior: "smooth" }); return; }
   const m = currentModel(); const meta = allModels().find((x) => x.id === $("model").value);
   if (!window.confirm(`${f.id}(${f.label_ko}) 방향으로 ${m.label || m.id}로 이미지를 1장 생성합니다. 비용이 발생합니다 (${meta ? meta.cost : "가격 확인 필요"}). 진행할까요?`)) return;
-  onGenerate();
+  onGenerate({ single: true });
 }
 
 function reviewNode(entry) {
@@ -1476,7 +1648,9 @@ async function init() {
   $("lockProduct").addEventListener("change", saveAutoPrefs);
   $("btnAutoPrompt").addEventListener("click", () => runAutoPrompt("button"));
 
-  $("btnGen").addEventListener("click", onGenerate);
+  $("btnGen").addEventListener("click", () => onGenerate());
+  $("drafts").addEventListener("change", refreshDraftNote);
+  refreshDraftNote();
   $("btnClear").addEventListener("click", () => { state.history = []; renderGallery(); });
 
   renderGallery();
