@@ -389,9 +389,10 @@ async function makeCutout(blob) {
     const i = stack[--sp]; const x = i % w;
     if (x > 0) visit(i - 1); if (x < w - 1) visit(i + 1); if (i >= w) visit(i - w); if (i < n - w) visit(i + w);
   }
-  let minX = w, minY = h, maxX = -1, maxY = -1;
+  let minX = w, minY = h, maxX = -1, maxY = -1, fg = 0;
   for (let i = 0; i < n; i++) {
     if (bg[i]) { d[i * 4 + 3] = 0; continue; }
+    fg++;
     const x = i % w, y = (i - x) / w;
     // 가장자리 1px은 밝을수록 살짝 투명하게 (흰 테두리 잔상 방지)
     if ((x > 0 && bg[i - 1]) || (x < w - 1 && bg[i + 1]) || (i >= w && bg[i - w]) || (i < n - w && bg[i + w])) {
@@ -401,6 +402,8 @@ async function makeCutout(blob) {
     if (d[i * 4 + 3] > 16) { if (x < minX) minX = x; if (x > maxX) maxX = x; if (y < minY) minY = y; if (y > maxY) maxY = y; }
   }
   if (maxX < 0) return { ok: false, reason: "제품 영역을 찾지 못해 원본 합성은 건너뛰었습니다." };
+  // 흰 여백만 조금 있는 일반 사진·포스터는 '제품'이 그림 전체가 되어, 합성하면 첨부 이미지가 그대로 덮입니다.
+  if (fg / n > 0.75) return { ok: false, reason: "흰 배경 위의 단독 제품 사진이 아니라 원본 합성은 건너뛰었습니다." };
   ctx.putImageData(img, 0, 0);
   const cw = maxX - minX + 1, ch = maxY - minY + 1;
   const crop = document.createElement("canvas"); crop.width = cw; crop.height = ch;
@@ -442,6 +445,27 @@ async function compositeProduct(img, cut, rect) {
   const dataUrl = c.toDataURL("image/png");
   return { mime: "image/png", b64: dataUrl.split(",")[1] };
 }
+
+/* 두 이미지를 32x32로 줄여 픽셀 평균 차이(0~255)를 잽니다. 작을수록 같은 그림. */
+async function imageDiff(a, b) {
+  const S = 32;
+  const px = async (img) => {
+    const bmp = await createImageBitmap(b64ToBlob(img.b64, img.mime));
+    const c = document.createElement("canvas"); c.width = S; c.height = S;
+    const ctx = c.getContext("2d"); ctx.drawImage(bmp, 0, 0, S, S);
+    return ctx.getImageData(0, 0, S, S).data;
+  };
+  const [p, q] = await Promise.all([px(a), px(b)]);
+  let sum = 0;
+  for (let i = 0; i < p.length; i += 4) sum += Math.abs(p[i] - q[i]) + Math.abs(p[i + 1] - q[i + 1]) + Math.abs(p[i + 2] - q[i + 2]);
+  return sum / (S * S * 3);
+}
+const UNCHANGED_DIFF = 8;
+
+const REF_PROMPT = [
+  "",
+  "[Reference use] The attached image(s) are references for the subject only. Create a NEW image that follows the description above (new scene, composition and styling). Do not return an attached image unchanged.",
+].join("\n");
 
 /* 보호할 제품 이미지: URL 대표 썸네일 > 첫 번째 참조 이미지 */
 function productSource() {
@@ -562,7 +586,7 @@ function renderGallery() {
     }
     const meta = document.createElement("div"); meta.className = "meta";
     const b = document.createElement("b"); b.textContent = e.label;
-    const info = document.createElement("span"); info.textContent = ` · ${e.ratio}${e.quality && e.quality !== "auto" ? " · " + e.quality : ""}${e.ms ? " · " + (e.ms / 1000).toFixed(1) + "초" : ""}${e.comp ? (e.b64 === e.comp.b64 ? " · 원본 제품 합성" : " · AI 생성 그대로") : ""}`;
+    const info = document.createElement("span"); info.textContent = ` · ${e.ratio}${e.quality && e.quality !== "auto" ? " · " + e.quality : ""}${e.ms ? " · " + (e.ms / 1000).toFixed(1) + "초" : ""}${e.comp ? (e.b64 === e.comp.b64 ? " · 원본 제품 합성" : " · AI 생성 그대로") : ""}${e.unchanged ? " · ⚠ 첨부 이미지와 거의 같음" : ""}`;
     const pr = document.createElement("div"); pr.className = "prompt"; pr.textContent = e.prompt;
     meta.append(b, info, pr); card.append(meta);
     if (!e.pending && !e.error) {
@@ -630,30 +654,37 @@ async function onGenerate() {
       } catch (e) { setStatus("URL을 읽지 못해 URL 없이 진행합니다. (" + e.message + ")"); }
     }
     let lock = null; let lockNote = "";
+    const reviewRefs = refs.slice(0, 2);
     if ($("lockProduct").checked) {
       const src = productSource();
       if (src) {
         if (!src.cut) src.cut = await makeCutout(src.blob);
         if (src.cut.ok) {
           const plate = makePlate(src.cut, outputAspect(prov, entry.ratio));
-          refs = [plate.ref, ...refs].slice(0, MAX_REFS);
+          // 판에 이미 제품이 들어 있으므로 같은 제품 원본은 빼서 입력 토큰을 아낍니다.
+          refs = [plate.ref, ...refs.filter((r) => r !== src && r !== src.ref)].slice(0, MAX_REFS);
           lock = { cut: src.cut, rect: plate.rect };
         } else lockNote = src.cut.reason;
       }
     }
-    const prompt = composePrompt(userPrompt, page, $("urlMode").value) + (lock ? "\n" + LOCK_PROMPT : "");
+    const prompt = composePrompt(userPrompt, page, $("urlMode").value) + (lock ? "\n" + LOCK_PROMPT : refs.length ? "\n" + REF_PROMPT : "");
     state.history.unshift(entry); renderGallery();
     setStatus(`${entry.label}로 생성 중... (10~90초)${lockNote ? " · " + lockNote : ""}`);
     const t0 = Date.now();
     let img = await generate(mm, prompt, refs, entry.ratio, entry.quality);
-    if (lock) {
+    // 모델이 보낸 이미지를 거의 그대로 돌려줬는지 확인 (그 위에 원본을 또 합성하면 첨부 이미지와 똑같아 보입니다)
+    if (refs.length) {
+      try { entry.unchanged = (await imageDiff(img, refs[0])) < UNCHANGED_DIFF; } catch (e) { /* 비교 실패는 무시 */ }
+    }
+    if (lock && !entry.unchanged) {
       entry.raw = { mime: img.mime, b64: img.b64 };
       img = await compositeProduct(img, lock.cut, lock.rect);
       entry.comp = { mime: img.mime, b64: img.b64 };
     }
     entry.pending = false; entry.ms = Date.now() - t0; entry.mime = img.mime; entry.b64 = img.b64; entry.dataUrl = `data:${img.mime};base64,${img.b64}`;
-    entry.refs = refs.filter((r) => !lock || r !== refs[0]).slice(0, 2);
-    setStatus(lockNote ? `완료! (${lockNote})` : lock ? "완료! 원본 제품 이미지를 같은 자리에 합성했습니다." : "완료!", "ok");
+    entry.refs = reviewRefs;
+    if (entry.unchanged) setStatus("모델이 첨부 이미지를 거의 바꾸지 않고 돌려줬습니다. 프롬프트에 배경·장면·구도를 구체적으로 적거나, 다른 모델로 시도해 보세요.", "err");
+    else setStatus(lockNote ? `완료! (${lockNote})` : lock ? "완료! 원본 제품 이미지를 같은 자리에 합성했습니다." : "완료!", "ok");
     await store.set({ last: { model: $("model").value, ratio: $("ratio").value, quality: $("quality").value, customProvider: $("customProvider").value, customModel: $("customModel").value } });
   } catch (e) {
     entry.pending = false; entry.error = e.message || String(e);
@@ -662,7 +693,7 @@ async function onGenerate() {
   } finally {
     state.busy = false; $("btnGen").disabled = false; renderGallery();
   }
-  if (entry.b64 && $("autoReview") && $("autoReview").checked && state.keys.gemini) runReview(entry);
+  if (entry.b64 && !entry.unchanged && $("autoReview") && $("autoReview").checked && state.keys.gemini) runReview(entry);
 }
 
 /* ====================================================================
