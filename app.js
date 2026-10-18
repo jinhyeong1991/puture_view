@@ -68,7 +68,7 @@ function qualityOptions(provider) {
 const $ = (id) => (typeof document !== "undefined" ? document.getElementById(id) : null);
 const state = {
   keys: { gemini: "", qwen: "", openai: "" }, qwenBase: DEFAULT_QWEN_BASE,
-  refs: [], page: null, pageUrl: "", history: [], busy: false,
+  refs: [], product: null, page: null, pageUrl: "", history: [], busy: false,
   modelFilter: "all", search: "", avail: { gemini: null, qwen: null, openai: null }, extra: [],
   preset: "poster", assist: null, autoPromptText: "", assistModel: "gemini-2.5-flash", proofModel: "gemini-3.1-pro-preview", autoCount: 0,
 };
@@ -194,9 +194,32 @@ async function blobToResized(blob, maxSide) {
   return { mime: "image/jpeg", b64: dataUrl.split(",")[1], dataUrl };
 }
 
+const MAX_FREE = MAX_REFS - 1;
+
+/* 🔒 보호할 제품 이미지 (1장). 제품은 변형하지 않고, 흰 배경이면 원본을 다시 합성합니다. */
+async function setProductBlob(blob) {
+  try { state.product = Object.assign(await blobToResized(blob), { blob }); } catch (e) { setStatus("이미지를 읽지 못했습니다.", "err"); return; }
+  renderProductThumb();
+  maybeAutoAnalyze(); maybeAutoPrompt("image");
+}
+
+function renderProductThumb() {
+  const box = $("thumbsProduct"); box.textContent = "";
+  if (!state.product) return;
+  const d = document.createElement("div"); d.className = "thumb";
+  const im = document.createElement("img"); im.src = state.product.dataUrl; im.alt = "보호할 제품 이미지";
+  const b = document.createElement("button"); b.type = "button"; b.textContent = "×"; b.setAttribute("aria-label", "보호할 제품 이미지 삭제");
+  b.addEventListener("click", () => { state.product = null; renderProductThumb(); });
+  d.append(im, b); box.append(d);
+}
+
+/* 분석·프롬프트 작성에 넘길 이미지: 제품이 맨 앞 */
+function analysisRefs() { return (state.product ? [state.product] : []).concat(state.refs); }
+
+/* 🎨 합성·패러디용 이미지 */
 async function addRefBlobs(blobs, silent) {
   for (const b of blobs) {
-    if (state.refs.length >= MAX_REFS) { setStatus(`참조 이미지는 최대 ${MAX_REFS}장입니다.`, "err"); break; }
+    if (state.refs.length >= MAX_FREE) { setStatus(`합성용 이미지는 최대 ${MAX_FREE}장입니다.`, "err"); break; }
     try { state.refs.push(Object.assign(await blobToResized(b), { blob: b })); } catch (e) { setStatus("이미지를 읽지 못했습니다.", "err"); }
   }
   renderThumbs();
@@ -462,16 +485,26 @@ async function imageDiff(a, b) {
 }
 const UNCHANGED_DIFF = 8;
 
-const REF_PROMPT = [
-  "",
-  "[Reference use] The attached image(s) are references for the subject only. Create a NEW image that follows the description above (new scene, composition and styling). Do not return an attached image unchanged.",
-].join("\n");
+/* 첨부 이미지마다 역할을 알려 줍니다: 제품(변형 금지) / 합성·패러디용(자유 변형) */
+function rolePrompt(slots) {
+  if (!slots.length) return "";
+  const L = ["", "[Image roles]"];
+  slots.forEach((s, i) => {
+    const n = `Image ${i + 1}`;
+    if (s === "plate") L.push(`${n}: layout plate with the PROTECTED PRODUCT (see product lock below).`);
+    else if (s === "product") L.push(`${n}: the PROTECTED PRODUCT. Reproduce it exactly: same shape, proportions, colors, materials, logo and lettering. Do not redesign, stylize or distort it.`);
+    else L.push(`${n}: a creative reference for composition or parody. You may freely restyle, transform and blend it into the new scene.`);
+  });
+  L.push("Create a NEW image that follows the description above. Do not return an attached image unchanged.");
+  return L.join("\n");
+}
 
 /* 보호할 제품 이미지: URL 대표 썸네일 > 첫 번째 참조 이미지 */
 function productSource() {
+  if (state.product) return state.product;
   const p = state.page;
   if ($("url").value.trim() && p && p.productImg && $("urlImg").checked) return p.productImg;
-  return state.refs.find((r) => r.blob) || null;
+  return null; // 🎨 합성용 이미지는 절대 보호·합성 대상으로 쓰지 않습니다
 }
 
 /* ---------- 제공자별 이미지 생성 ---------- */
@@ -644,30 +677,28 @@ async function onGenerate() {
   state.busy = true; $("btnGen").disabled = true;
   const entry = { label: mm.label || mm.id, model: mm.id, prompt: userPrompt, ratio: $("ratio").value, quality: $("quality").value, pending: true, time: Date.now() };
   try {
-    let page = null; let refs = state.refs.slice();
+    let page = null;
     if ($("url").value.trim()) {
       setStatus("URL을 불러오는 중...");
-      try {
-        page = await ensureUrlLoaded(); showUrlInfo(page);
-        // 대표 썸네일을 맨 앞 참조로 (제품이 주인공)
-        if (page && page.productImg && $("urlImg").checked) refs = [page.productImg.ref, ...refs].slice(0, MAX_REFS);
-      } catch (e) { setStatus("URL을 읽지 못해 URL 없이 진행합니다. (" + e.message + ")"); }
+      try { page = await ensureUrlLoaded(); showUrlInfo(page); } catch (e) { setStatus("URL을 읽지 못해 URL 없이 진행합니다. (" + e.message + ")"); }
     }
-    let lock = null; let lockNote = "";
-    const reviewRefs = refs.slice(0, 2);
-    if ($("lockProduct").checked) {
-      const src = productSource();
-      if (src) {
-        if (!src.cut) src.cut = await makeCutout(src.blob);
-        if (src.cut.ok) {
-          const plate = makePlate(src.cut, outputAspect(prov, entry.ratio));
-          // 판에 이미 제품이 들어 있으므로 같은 제품 원본은 빼서 입력 토큰을 아낍니다.
-          refs = [plate.ref, ...refs.filter((r) => r !== src && r !== src.ref)].slice(0, MAX_REFS);
-          lock = { cut: src.cut, rect: plate.rect };
-        } else lockNote = src.cut.reason;
-      }
+    const src = productSource();
+    const srcRef = src ? (src.ref || src) : null;
+    const free = state.refs.slice(0, src ? MAX_FREE : MAX_REFS);
+    let lock = null; let lockNote = ""; let head = srcRef ? [srcRef] : []; let slots = srcRef ? ["product"] : [];
+    const reviewRefs = head.concat(free).slice(0, 2);
+    if (src && $("lockProduct").checked) {
+      if (!src.cut) src.cut = await makeCutout(src.blob);
+      if (src.cut.ok) {
+        // 판에 이미 제품이 들어 있으므로 제품 원본은 따로 보내지 않아 입력 토큰을 아낍니다.
+        const plate = makePlate(src.cut, outputAspect(prov, entry.ratio));
+        head = [plate.ref]; slots = ["plate"];
+        lock = { cut: src.cut, rect: plate.rect };
+      } else lockNote = src.cut.reason;
     }
-    const prompt = composePrompt(userPrompt, page, $("urlMode").value) + (lock ? "\n" + LOCK_PROMPT : refs.length ? "\n" + REF_PROMPT : "");
+    const refs = head.concat(free);
+    slots = slots.concat(free.map(() => "free"));
+    const prompt = composePrompt(userPrompt, page, $("urlMode").value) + rolePrompt(slots) + (lock ? "\n" + LOCK_PROMPT : "");
     state.history.unshift(entry); renderGallery();
     setStatus(`${entry.label}로 생성 중... (10~90초)${lockNote ? " · " + lockNote : ""}`);
     const t0 = Date.now();
@@ -868,16 +899,16 @@ async function runAssist(auto) {
   const key = state.keys.gemini;
   if (!key) { $("assistStatus").textContent = "프롬프트 도우미는 Gemini API 키가 필요합니다. ⚙ API 키 설정에서 입력하세요."; $("assistStatus").className = "status err"; if (!auto) $("dlg").showModal(); return; }
   const kw = $("kw").value.trim();
-  if (!kw && !state.refs.length && !$("url").value.trim()) { $("assistStatus").textContent = "단어를 입력하거나 이미지를 올려 주세요."; $("assistStatus").className = "status err"; return; }
+  if (!kw && !analysisRefs().length && !$("url").value.trim()) { $("assistStatus").textContent = "단어를 입력하거나 이미지를 올려 주세요."; $("assistStatus").className = "status err"; return; }
   cancelCountdown();
   assistBusy = true; $("btnAssist").disabled = true;
-  $("assistStatus").textContent = state.refs.length ? "이미지를 분석하고 프롬프트를 쓰는 중... (10~30초)" : "프롬프트를 쓰는 중..."; $("assistStatus").className = "status";
+  $("assistStatus").textContent = analysisRefs().length ? "이미지를 분석하고 프롬프트를 쓰는 중... (10~30초)" : "프롬프트를 쓰는 중..."; $("assistStatus").className = "status";
   try {
     let page = null;
     if ($("url").value.trim()) { try { page = await ensureUrlLoaded(); } catch (e) { /* URL 실패는 무시 */ } }
     const preset = PRESETS.find((p) => p.id === state.preset) || PRESETS[0];
     const raw = await callAssist(key, state.assistModel || "gemini-2.5-flash", buildAssistSystem(),
-      buildAssistUser({ keywords: kw, preset, copy: $("copyText").value.trim(), page, imageCount: state.refs.length }), state.refs);
+      buildAssistUser({ keywords: kw, preset, copy: $("copyText").value.trim(), page, imageCount: analysisRefs().length }), analysisRefs());
     const r = normalizeAssist(parseJsonLoose(raw));
     if (!r.main.prompt_en) throw new Error("프롬프트가 비어 있습니다. 다시 시도해 주세요.");
     if (!r.ratio) r.ratio = preset.ratio;
@@ -992,10 +1023,11 @@ async function runAutoPrompt(trigger) {
       try { page = await ensureUrlLoaded(); showUrlInfo(page); } catch (e) { autoSay("URL을 읽지 못해 이미지로만 분석합니다. (" + e.message + ")"); }
     }
     const imgs = [];
-    if (page && page.productImg) imgs.push(page.productImg.ref);
+    if (state.product) imgs.push(state.product);
+    else if (page && page.productImg) imgs.push(page.productImg.ref);
     state.refs.forEach((r) => { if (imgs.length < 3) imgs.push(r); });
     // 올린 이미지가 없으면 상세 슬라이드 2~3번째 장도 참고 (기능 설명 이미지인 경우가 많음)
-    if (page && page.images && !state.refs.length) {
+    if (page && page.images && !analysisRefs().length) {
       for (const u of page.images.slice(1, 3)) { if (imgs.length >= 3) break; try { imgs.push(await fetchRef(u)); } catch (e) { /* 무시 */ } }
     }
     if (!imgs.length && !(page && page.kind === "page")) { autoSay("상품 URL을 넣거나 이미지를 올리면 자동으로 프롬프트를 씁니다.", "err"); return; }
@@ -1331,6 +1363,14 @@ async function init() {
   ["dragenter", "dragover"].forEach((t) => drop.addEventListener(t, (e) => { e.preventDefault(); drop.classList.add("over"); }));
   ["dragleave", "drop"].forEach((t) => drop.addEventListener(t, (e) => { e.preventDefault(); drop.classList.remove("over"); }));
   drop.addEventListener("drop", (e) => addRefBlobs(Array.from(e.dataTransfer.files).filter((f) => f.type.startsWith("image/"))));
+  const dropP = $("dropProduct"), fileP = $("fileProduct");
+  const pickP = (list) => { const f = Array.from(list || []).find((x) => x.type.startsWith("image/")); if (f) setProductBlob(f); };
+  dropP.addEventListener("click", () => fileP.click());
+  dropP.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); fileP.click(); } });
+  fileP.addEventListener("change", () => { pickP(fileP.files); fileP.value = ""; });
+  ["dragenter", "dragover"].forEach((t) => dropP.addEventListener(t, (e) => { e.preventDefault(); dropP.classList.add("over"); }));
+  ["dragleave", "drop"].forEach((t) => dropP.addEventListener(t, (e) => { e.preventDefault(); dropP.classList.remove("over"); }));
+  dropP.addEventListener("drop", (e) => pickP(e.dataTransfer.files));
   document.addEventListener("paste", (e) => {
     const f = Array.from((e.clipboardData && e.clipboardData.files) || []).filter((x) => x.type.startsWith("image/"));
     if (f.length) addRefBlobs(f);

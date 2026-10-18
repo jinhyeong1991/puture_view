@@ -51,9 +51,18 @@
     </div>
 
     <div class="field">
-      <span>참조 이미지 (최대 4장, 선택)</span>
-      <div id="drop" class="drop" tabindex="0" role="button" aria-label="이미지 선택 또는 끌어다 놓기">
-        이미지를 끌어다 놓거나 클릭해서 선택 · 붙여넣기(Ctrl+V)도 가능
+      <span>🔒 보호할 제품 이미지 (1장, 선택)</span>
+      <div id="dropProduct" class="drop lock" tabindex="0" role="button" aria-label="보호할 제품 이미지 선택 또는 끌어다 놓기">
+        모양·색·로고가 절대 바뀌면 안 되는 제품 사진 · 흰 배경 사진이면 원본 그대로 합성
+        <input id="fileProduct" type="file" accept="image/*" hidden>
+      </div>
+      <div id="thumbsProduct" class="thumbs"></div>
+    </div>
+
+    <div class="field">
+      <span>🎨 합성·패러디용 이미지 (최대 3장, 선택)</span>
+      <div id="drop" class="drop" tabindex="0" role="button" aria-label="합성용 이미지 선택 또는 끌어다 놓기">
+        자유롭게 변형·합성할 사진 (장면, 인물, 패러디 원본 등) · 붙여넣기(Ctrl+V)도 가능
         <input id="files" type="file" accept="image/*" multiple hidden>
       </div>
       <div id="thumbs" class="thumbs"></div>
@@ -117,8 +126,8 @@
         <label class="inline">자동 작성 형식 <select id="autoStyle" aria-label="자동 작성 형식"></select></label>
         <label class="check"><input id="autoPrompt" type="checkbox" checked> URL을 불러오거나 이미지를 올리면 자동 작성</label>
       </div>
-      <label class="check mt"><input id="lockProduct" type="checkbox" checked> 제품 원본 보호 (썸네일을 손상 없이 포스터에 합성)</label>
-      <small>대표 썸네일(없으면 첫 참조 이미지)을 오려 자리를 잡아 보내고, 생성 후 원본 제품을 같은 자리에 다시 얹습니다. 흰색·투명 배경 제품 사진일 때 동작합니다.</small>
+      <label class="check mt"><input id="lockProduct" type="checkbox" checked> 제품 원본 보호 (🔒 제품 이미지를 손상 없이 합성)</label>
+      <small>🔒 제품 이미지(없으면 URL 대표 썸네일)를 오려 자리를 잡아 보내고, 생성 후 원본 제품을 같은 자리에 다시 얹습니다. 흰색·투명 배경 제품 사진일 때 동작합니다. 🎨 합성용 이미지는 덮어씌우지 않습니다.</small>
       <p id="autoPromptStatus" class="status" role="status" aria-live="polite"></p>
       <div id="autoInfo" class="autoinfo" hidden></div>
     </div>
