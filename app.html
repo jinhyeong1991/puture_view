@@ -199,6 +199,8 @@
     <label class="field"><span>QwenCloud(DashScope) API 키</span><input id="kQwen" type="password" autocomplete="off" placeholder="sk-..."></label>
     <label class="field"><span>Qwen API 주소 (고급)</span><input id="qwenBase" type="text" placeholder="https://ap-southeast-1.maas.qwencloudapi.com"></label>
     <label class="field"><span>OpenAI API 키</span><input id="kOpenAI" type="password" autocomplete="off" placeholder="sk-proj-..."></label>
+    <label class="field"><span>eachlabs API 키 (🎬 동영상용)</span><input id="kEachlabs" type="password" autocomplete="off" placeholder="eachlabs.ai → API Keys">
+      <small>결과 카드의 🎬 동영상(MiniMax H3 Max)에 사용합니다. eachlabs.ai에서 가입 후 API Keys에서 만들고, 잔액을 충전해야 동작합니다.</small></label>
     <label class="field"><span>프롬프트 도우미·해설 모델 (Gemini 텍스트 모델)</span><input id="assistModel" type="text" placeholder="gemini-2.5-flash">
       <small>프롬프트 도우미와 사진관 해설·평가는 Gemini API 키를 사용합니다.</small></label>
     <label class="field"><span>글자 검수 모델 (Gemini)</span><input id="proofModel" type="text" placeholder="gemini-3.1-pro-preview">
@@ -206,6 +208,28 @@
     <div class="dlgactions">
       <button value="cancel" class="ghost" type="submit">닫기</button>
       <button id="btnSave" class="primary" value="save" type="submit">저장</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="videoDlg" aria-labelledby="vdTitle">
+  <form method="dialog" class="dlgbody">
+    <h2 id="vdTitle">🎬 동영상 만들기</h2>
+    <p class="hint">이 이미지를 첫 장면으로 MiniMax H3 Max가 움직이는 영상을 만듭니다 (eachlabs 경유).</p>
+    <img id="vdImg" class="vdimg" alt="첫 장면으로 쓸 이미지">
+    <label class="field"><span>움직임 설명 (영어 권장)</span><textarea id="vdPrompt" rows="4"></textarea>
+      <small>예) The man smiles and waves at the camera while Pikachu jumps beside him. Slow camera push-in.</small></label>
+    <div class="grid2">
+      <label class="field"><span>해상도</span>
+        <select id="vdRes"><option value="480P" selected>480P (시험용, 가장 저렴)</option><option value="768P">768P (기본)</option><option value="1080P">1080P (선명, 비쌈)</option></select></label>
+      <label class="field"><span>길이</span>
+        <select id="vdSec"><option value="5" selected>5초</option><option value="8">8초</option><option value="10">10초</option><option value="15">15초</option></select></label>
+    </div>
+    <p id="vdCost" class="cost"></p>
+    <p id="vdBalance" class="hint"></p>
+    <div class="dlgactions">
+      <button value="cancel" class="ghost" type="submit">취소</button>
+      <button value="go" class="primary" type="submit">동영상 생성</button>
     </div>
   </form>
 </dialog>

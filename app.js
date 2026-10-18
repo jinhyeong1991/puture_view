@@ -67,7 +67,7 @@ function qualityOptions(provider) {
 /* ---------- 상태 ---------- */
 const $ = (id) => (typeof document !== "undefined" ? document.getElementById(id) : null);
 const state = {
-  keys: { gemini: "", qwen: "", openai: "" }, qwenBase: DEFAULT_QWEN_BASE,
+  keys: { gemini: "", qwen: "", openai: "", eachlabs: "" }, qwenBase: DEFAULT_QWEN_BASE,
   refs: [], product: null, refRole: "subject", page: null, pageUrl: "", history: [], busy: false,
   modelFilter: "all", search: "", avail: { gemini: null, qwen: null, openai: null }, extra: [],
   preset: "poster", assist: null, autoPromptText: "", assistModel: "gemini-2.5-flash", proofModel: "gemini-3.1-pro-preview", autoCount: 0,
@@ -707,7 +707,12 @@ function renderGallery() {
         t.addEventListener("click", () => { const v = showingRaw ? e.comp : e.raw; e.mime = v.mime; e.b64 = v.b64; e.dataUrl = `data:${v.mime};base64,${v.b64}`; renderGallery(); });
         acts.append(t);
       }
+      const vb = document.createElement("button"); vb.type = "button"; vb.textContent = "🎬 동영상";
+      vb.title = "이 이미지를 움직이는 짧은 영상으로 만듭니다 (MiniMax H3 Max · eachlabs)"; vb.disabled = !!(e.video && e.video.status === "running");
+      vb.addEventListener("click", () => openVideoDialog(e));
+      acts.append(vb);
       card.append(acts);
+      if (e.video) card.append(videoNode(e));
       card.append(reviewNode(e));
     }
     g.append(card);
@@ -964,6 +969,121 @@ function refreshDraftNote() {
   if (n === 1) { $("draftNote").textContent = "선택한 모델·화질로 바로 만듭니다."; return; }
   const p = draftPick(prov, m);
   $("draftNote").textContent = `시안은 ${p.model.label || p.model.id} · ${p.quality}로 구도를 다르게 ${n}장 만들고, 고른 시안만 '⬆ 고화질로'를 눌러 선택한 모델 · ${hqQuality(prov)}로 다시 만듭니다.`;
+}
+
+/* ====================================================================
+ * 🎬 동영상: 결과 이미지를 첫 장면으로 MiniMax H3 Max(eachlabs) 영상 생성
+ * 요청 -> predictionID -> 4초마다 상태 확인 -> 완료되면 카드에 영상 표시
+ * ==================================================================== */
+const EACHLABS_API = "https://api.eachlabs.ai/v1";
+const VIDEO_MODEL = "minimax-h3-max-image-to-video";
+const VIDEO_USD_PER_SEC = { "480P": 0.0325, "768P": 0.052, "1080P": 0.104 };
+const VIDEO_DEFAULT_PROMPT = "Bring this image to life with subtle, natural motion and a slow cinematic camera push-in. Keep every person, product, logo and text exactly as in the image; no new objects, no morphing.";
+
+function videoCost(res, sec) {
+  const usd = (VIDEO_USD_PER_SEC[res] || 0) * sec;
+  return `약 $${usd.toFixed(2)} (≈ ${(Math.round((usd * USD_KRW) / 10) * 10).toLocaleString()}원)`;
+}
+
+async function eachlabsFetch(path, init) {
+  const res = await fetch(EACHLABS_API + path, Object.assign({}, init, {
+    headers: Object.assign({ Authorization: `Bearer ${state.keys.eachlabs}`, "Content-Type": "application/json" }, (init && init.headers) || {}),
+  }));
+  if (!res.ok) {
+    let detail = ""; try { detail = await res.text(); } catch (e) { /* 무시 */ }
+    if (res.status === 401) throw new Error("eachlabs API 키가 올바르지 않습니다. ⚙ API 키 설정에서 확인하세요.");
+    if (res.status === 402 || /insufficient|balance|credit/i.test(detail)) throw new Error("eachlabs 잔액이 부족합니다. eachlabs.ai에서 충전하세요.");
+    throw new Error(`eachlabs 오류 (HTTP ${res.status}) ${detail.slice(0, 300)}`);
+  }
+  return res.json();
+}
+
+async function eachlabsBalance() {
+  try { const j = await eachlabsFetch("/billing/balance"); return typeof j.balance_usd === "number" ? j.balance_usd : null; } catch (e) { return null; }
+}
+
+/* 결과에서 영상 주소 꺼내기 (문자열 / 배열 / {url} 모두 대응) */
+function videoUrlOf(out) {
+  if (!out) return "";
+  if (typeof out === "string") return out;
+  if (Array.isArray(out)) return videoUrlOf(out[0]);
+  return out.url || out.video || (out.video && out.video.url) || "";
+}
+
+function openVideoDialog(e) {
+  if (!state.keys.eachlabs) { setStatus("동영상은 eachlabs API 키가 필요합니다. ⚙ API 키 설정에서 입력하세요.", "err"); $("dlg").showModal(); return; }
+  const dlg = $("videoDlg");
+  $("vdImg").src = e.dataUrl;
+  if (!$("vdPrompt").value.trim()) $("vdPrompt").value = VIDEO_DEFAULT_PROMPT;
+  const refresh = () => { $("vdCost").textContent = `예상 비용: ${videoCost($("vdRes").value, Number($("vdSec").value))} · 생성 시간 보통 3~6분`; };
+  $("vdRes").onchange = refresh; $("vdSec").onchange = refresh; refresh();
+  $("vdBalance").textContent = "잔액 확인 중...";
+  eachlabsBalance().then((b) => { $("vdBalance").textContent = b == null ? "잔액을 확인하지 못했습니다." : `eachlabs 잔액: $${b.toFixed(2)} (≈ ${Math.round(b * USD_KRW).toLocaleString()}원)`; });
+  dlg.returnValue = "";
+  dlg.addEventListener("close", () => { if (dlg.returnValue === "go") startVideo(e, { prompt: $("vdPrompt").value.trim() || VIDEO_DEFAULT_PROMPT, resolution: $("vdRes").value, duration: Number($("vdSec").value) }); }, { once: true });
+  dlg.showModal();
+}
+
+async function startVideo(e, o) {
+  e.video = { status: "running", started: Date.now(), resolution: o.resolution, duration: o.duration, note: "요청 보내는 중..." };
+  renderGallery();
+  try {
+    // 화면에 보이는 결과(제품 합성본이면 합성본)를 첫 장면으로 보냅니다
+    const first = await blobToResized(b64ToBlob(e.b64, e.mime), 1536);
+    const j = await eachlabsFetch("/prediction", { method: "POST", body: JSON.stringify({
+      model: VIDEO_MODEL, version: "1.0.0",
+      input: { prompt: o.prompt, image_url: first.dataUrl, duration: o.duration, resolution: o.resolution, prompt_expansion_mode: "balanced", enable_safety_checker: true },
+    }) });
+    const id = j.predictionID || j.id;
+    if (!id) throw new Error("eachlabs가 작업 번호를 돌려주지 않았습니다. " + JSON.stringify(j).slice(0, 200));
+    e.video.id = id; e.video.note = "대기 중";
+    for (;;) {
+      await new Promise((r) => setTimeout(r, 4000));
+      const p = await eachlabsFetch(`/prediction/${encodeURIComponent(id)}`);
+      if (p.status === "success") {
+        e.video.url = videoUrlOf(p.output);
+        if (!e.video.url) throw new Error("완료됐지만 영상 주소가 없습니다. " + JSON.stringify(p.output).slice(0, 200));
+        e.video.cost = p.metrics && typeof p.metrics.cost === "number" ? p.metrics.cost : null;
+        e.video.status = "done"; break;
+      }
+      if (p.status === "failed" || p.status === "cancelled") {
+        const log = String(p.logs || p.error || "");
+        throw /safety|content filter|moderation|nsfw/i.test(log) ? new Error("안전 필터 거절: 실존 인물·유명 캐릭터·브랜드가 들어간 이미지는 막힐 수 있습니다.")
+          : /url|uri|image/i.test(log) ? new Error("이미지 전달 실패: " + log.slice(0, 200))
+          : new Error(`동영상 생성 실패 (${p.status}) ${log.slice(0, 200)}`);
+      }
+      e.video.note = p.status === "processing" ? "생성 중" : "대기 중";
+      updateVideoProgress(e);
+    }
+    setStatus(`🎬 동영상 완료!${e.video.cost != null ? ` (실제 비용 $${e.video.cost.toFixed(3)})` : ""}`, "ok");
+  } catch (err) {
+    e.video.status = "error"; e.video.error = err.message || String(err);
+    setStatus(e.video.error, "err");
+  }
+  renderGallery();
+}
+
+function elapsedText(ms) { const s = Math.floor(ms / 1000); return `${Math.floor(s / 60)}분 ${s % 60}초`; }
+
+/* 진행 표시만 갱신 (갤러리 전체를 다시 그리면 재생 중인 다른 영상이 멈추므로) */
+function updateVideoProgress(e) {
+  const el = document.querySelector(`[data-video="${e.time}"]`);
+  if (el) el.textContent = `🎬 ${e.video.note}... ${elapsedText(Date.now() - e.video.started)} 경과 · ${e.video.resolution} ${e.video.duration}초`;
+}
+
+function videoNode(e) {
+  const box = document.createElement("div"); box.className = "videobox";
+  if (e.video.status === "done") {
+    const v = document.createElement("video"); v.src = e.video.url; v.controls = true; v.loop = true; v.playsInline = true; v.preload = "metadata";
+    const a = document.createElement("a"); a.href = e.video.url; a.target = "_blank"; a.rel = "noopener"; a.textContent = "영상 새 탭에서 열기 / 저장";
+    box.append(v, a);
+  } else {
+    const p = document.createElement("div"); p.className = e.video.status === "error" ? "vnote err" : "vnote";
+    p.dataset.video = String(e.time);
+    p.textContent = e.video.status === "error" ? `🎬 ${e.video.error}` : `🎬 ${e.video.note}... ${elapsedText(Date.now() - e.video.started)} 경과`;
+    box.append(p);
+  }
+  return box;
 }
 
 /* ====================================================================
@@ -1594,13 +1714,13 @@ async function init() {
   $("prompt").addEventListener("input", () => ($("count").textContent = $("prompt").value.length));
 
   $("btnSettings").addEventListener("click", () => {
-    $("kGemini").value = state.keys.gemini || ""; $("kQwen").value = state.keys.qwen || ""; $("kOpenAI").value = state.keys.openai || ""; $("qwenBase").value = state.qwenBase || "";
+    $("kGemini").value = state.keys.gemini || ""; $("kQwen").value = state.keys.qwen || ""; $("kOpenAI").value = state.keys.openai || ""; $("kEachlabs").value = state.keys.eachlabs || ""; $("qwenBase").value = state.qwenBase || "";
     $("assistModel").value = state.assistModel || ""; $("proofModel").value = state.proofModel || "";
     $("dlg").showModal();
   });
   $("settingsForm").addEventListener("submit", async (ev) => {
     if ((ev.submitter ? ev.submitter.value : "cancel") !== "save") return;
-    state.keys = { gemini: $("kGemini").value.trim(), qwen: $("kQwen").value.trim(), openai: $("kOpenAI").value.trim() };
+    state.keys = { gemini: $("kGemini").value.trim(), qwen: $("kQwen").value.trim(), openai: $("kOpenAI").value.trim(), eachlabs: $("kEachlabs").value.trim() };
     state.qwenBase = $("qwenBase").value.trim() || DEFAULT_QWEN_BASE;
     state.assistModel = $("assistModel").value.trim() || "gemini-2.5-flash";
     state.proofModel = $("proofModel").value.trim() || "gemini-3.1-pro-preview";
