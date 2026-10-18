@@ -31,6 +31,17 @@ input:focus-visible, textarea:focus-visible, select:focus-visible, button:focus-
 .inline select { width:auto; padding:5px 8px; font-size:12px; }
 .check { display:flex; gap:6px; align-items:center; font-size:12px; color:var(--sub); }
 .urlinfo { margin-top:8px; background:var(--chip); border-radius:8px; padding:8px 10px; font-size:12px; color:var(--sub); max-height:150px; overflow:auto; white-space:pre-wrap; word-break:break-word; }
+.urlinfo { display:flex; gap:10px; align-items:flex-start; }
+.urlthumb { width:72px; height:72px; object-fit:contain; background:#fff; border-radius:6px; border:1px solid var(--line); flex:none; }
+.fhead { display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:4px; }
+.fhead label { font-weight:600; }
+button.sm { padding:5px 10px; font-size:12px; }
+.autoinfo { margin-top:6px; background:var(--chip); border-radius:8px; padding:8px 10px; font-size:12px; color:var(--sub); }
+.autoinfo p { margin:0 0 4px; word-break:break-word; }
+.autoinfo b { color:var(--ink); }
+.autoinfo .btns { display:flex; gap:6px; flex-wrap:wrap; margin-top:6px; }
+.autoinfo .btns button { padding:4px 10px; font-size:12px; }
+.swatch { display:inline-block; width:14px; height:14px; border-radius:4px; border:1px solid var(--line); margin-right:4px; vertical-align:-2px; }
 .drop { border:2px dashed var(--line); border-radius:10px; padding:16px; text-align:center; color:var(--sub); cursor:pointer; background:var(--bg); }
 .drop.over { border-color:var(--brand); color:var(--brand); }
 .thumbs { display:flex; flex-wrap:wrap; gap:8px; margin-top:8px; }
