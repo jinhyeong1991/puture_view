@@ -107,6 +107,20 @@
     </div>
 
     <div class="field">
+      <span>PSD 레이아웃 (선택)</span>
+      <div class="row">
+        <input id="psdFile" type="file" accept=".psd" aria-label="PSD 파일 선택">
+        <button id="btnPsdClear" type="button" class="ghost sm">빼기</button>
+      </div>
+      <small>PSD를 넣으면 체크한 텍스트 레이어는 손대지 않고, 텍스트 밖 영역에만 제품과 배경을 만들어 원본 크기 PNG·PSD로 돌려줍니다.</small>
+      <label id="psdOnRow" class="check mt" hidden><input id="psdOn" type="checkbox" checked> 이 PSD 레이아웃으로 생성</label>
+      <div id="psdInfo" class="urlinfo" hidden></div>
+      <div id="psdLayers" class="psdlayers" role="group" aria-label="그대로 둘 레이어 (체크 = 유지)"></div>
+      <canvas id="psdPreview" class="psdpreview" hidden aria-label="PSD 배치 미리보기"></canvas>
+      <small id="psdNote"></small>
+    </div>
+
+    <div class="field">
       <div class="fhead">
         <label for="prompt">프롬프트</label>
         <button id="btnAutoPrompt" type="button" class="ghost sm">✨ URL·이미지로 자동 작성</button>
@@ -177,6 +191,7 @@
   </form>
 </dialog>
 
+<script src="lib/ag-psd.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
