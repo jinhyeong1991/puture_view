@@ -212,7 +212,6 @@ function renderThumbs() {
     b.addEventListener("click", () => { state.refs.splice(i, 1); renderThumbs(); });
     d.append(im, b); box.append(d);
   });
-  if (state.psd) drawPsdPreview();
 }
 
 function b64ToBlob(b64, mime) {
@@ -333,7 +332,6 @@ function showUrlInfo(p) {
     ].filter(Boolean).join("\n");
   }
   box.append(t);
-  if (state.psd) drawPsdPreview();
 }
 
 function composePrompt(userPrompt, page, mode) {
@@ -465,7 +463,7 @@ async function httpError(res, label) {
 async function genGemini(key, model, prompt, refs, ratio, size) {
   const parts = [{ text: prompt }];
   refs.forEach((r) => parts.push({ inlineData: { mimeType: r.mime, data: r.b64 } }));
-  const imageConfig = GEN_RATIOS.gemini.includes(ratio) ? { aspectRatio: ratio } : {};
+  const imageConfig = RATIOS.includes(ratio) ? { aspectRatio: ratio } : {};
   if (size && size !== "1K") imageConfig.imageSize = size;
   const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
     method: "POST",
@@ -537,7 +535,6 @@ async function generate(m, prompt, refs, ratio, quality) {
 
 /* ---------- 결과 화면 ---------- */
 function saveImage(entry) {
-  if (entry.psdJob) { entry.psdJob.full.toBlob((b) => downloadBlob(b, `${entry.psdJob.name}_puture_${entry.time}.png`), "image/png"); return; }
   const a = document.createElement("a"); a.href = entry.dataUrl;
   const ext = entry.mime.includes("jpeg") ? "jpg" : "png";
   a.download = `puture_${entry.model.replace(/[^a-z0-9.\-]+/gi, "_")}_${entry.time}.${ext}`;
@@ -575,20 +572,6 @@ function renderGallery() {
       const r = document.createElement("button"); r.type = "button"; r.textContent = "참조로 사용";
       r.addEventListener("click", () => { addRefBlobs([b64ToBlob(e.b64, e.mime)], true); setStatus("결과 이미지를 참조 이미지에 추가했습니다.", "ok"); });
       acts.append(s, c, r);
-      if (e.psdJob) {
-        s.textContent = "PNG 저장 (원본 크기)";
-        const p = document.createElement("button"); p.type = "button"; p.textContent = "PSD 저장";
-        p.addEventListener("click", async () => {
-          p.disabled = true; p.textContent = "PSD 만드는 중...";
-          await new Promise((r) => setTimeout(r, 30));
-          try { downloadBlob(buildPsdBlob(e.psdJob), `${e.psdJob.name}_puture_${e.time}.psd`); p.textContent = "PSD 저장"; }
-          catch (err) { p.textContent = "PSD 저장 실패"; setStatus("PSD를 만들지 못했습니다: " + (err.message || err), "err"); }
-          p.disabled = false;
-        });
-        acts.append(p);
-      } else if (e.psdDropped) {
-        const n = document.createElement("span"); n.className = "rv-why"; n.textContent = `메모리 절약을 위해 최근 ${PSD_JOB_KEEP}개만 PSD 저장이 가능합니다.`; acts.append(n);
-      }
       if (e.raw && e.comp) {
         const showingRaw = e.b64 === e.raw.b64;
         const t = document.createElement("button"); t.type = "button"; t.textContent = showingRaw ? "원본 제품 합성본 보기" : "AI 생성 그대로 보기";
@@ -646,8 +629,31 @@ async function onGenerate() {
         if (page && page.productImg && $("urlImg").checked) refs = [page.productImg.ref, ...refs].slice(0, MAX_REFS);
       } catch (e) { setStatus("URL을 읽지 못해 URL 없이 진행합니다. (" + e.message + ")"); }
     }
-    if (psdActive()) await generatePsdBanner(mm, entry, userPrompt, page, refs);
-    else await generatePlain(mm, entry, userPrompt, page, refs);
+    let lock = null; let lockNote = "";
+    if ($("lockProduct").checked) {
+      const src = productSource();
+      if (src) {
+        if (!src.cut) src.cut = await makeCutout(src.blob);
+        if (src.cut.ok) {
+          const plate = makePlate(src.cut, outputAspect(prov, entry.ratio));
+          refs = [plate.ref, ...refs].slice(0, MAX_REFS);
+          lock = { cut: src.cut, rect: plate.rect };
+        } else lockNote = src.cut.reason;
+      }
+    }
+    const prompt = composePrompt(userPrompt, page, $("urlMode").value) + (lock ? "\n" + LOCK_PROMPT : "");
+    state.history.unshift(entry); renderGallery();
+    setStatus(`${entry.label}로 생성 중... (10~90초)${lockNote ? " · " + lockNote : ""}`);
+    const t0 = Date.now();
+    let img = await generate(mm, prompt, refs, entry.ratio, entry.quality);
+    if (lock) {
+      entry.raw = { mime: img.mime, b64: img.b64 };
+      img = await compositeProduct(img, lock.cut, lock.rect);
+      entry.comp = { mime: img.mime, b64: img.b64 };
+    }
+    entry.pending = false; entry.ms = Date.now() - t0; entry.mime = img.mime; entry.b64 = img.b64; entry.dataUrl = `data:${img.mime};base64,${img.b64}`;
+    entry.refs = refs.filter((r) => !lock || r !== refs[0]).slice(0, 2);
+    setStatus(lockNote ? `완료! (${lockNote})` : lock ? "완료! 원본 제품 이미지를 같은 자리에 합성했습니다." : "완료!", "ok");
     await store.set({ last: { model: $("model").value, ratio: $("ratio").value, quality: $("quality").value, customProvider: $("customProvider").value, customModel: $("customModel").value } });
   } catch (e) {
     entry.pending = false; entry.error = e.message || String(e);
@@ -657,296 +663,6 @@ async function onGenerate() {
     state.busy = false; $("btnGen").disabled = false; renderGallery();
   }
   if (entry.b64 && $("autoReview") && $("autoReview").checked && state.keys.gemini) runReview(entry);
-}
-
-/* 제품 원본 보호용 오려낸 제품 (없거나 실패하면 cut 대신 note) */
-async function lockedProduct() {
-  if (!$("lockProduct").checked) return {};
-  const src = productSource();
-  if (!src) return {};
-  if (!src.cut) src.cut = await makeCutout(src.blob);
-  return src.cut.ok ? { cut: src.cut } : { note: src.cut.reason };
-}
-
-async function generatePlain(mm, entry, userPrompt, page, refs) {
-  const { cut, note } = await lockedProduct();
-  let lock = null;
-  if (cut) {
-    const plate = makePlate(cut, outputAspect(mm.provider, entry.ratio));
-    refs = [plate.ref, ...refs].slice(0, MAX_REFS);
-    lock = { cut, rect: plate.rect };
-  }
-  const prompt = composePrompt(userPrompt, page, $("urlMode").value) + (lock ? "\n" + LOCK_PROMPT : "");
-  state.history.unshift(entry); renderGallery();
-  setStatus(`${entry.label}로 생성 중... (10~90초)${note ? " · " + note : ""}`);
-  const t0 = Date.now();
-  let img = await generate(mm, prompt, refs, entry.ratio, entry.quality);
-  if (lock) {
-    entry.raw = { mime: img.mime, b64: img.b64 };
-    img = await compositeProduct(img, lock.cut, lock.rect);
-    entry.comp = { mime: img.mime, b64: img.b64 };
-  }
-  entry.pending = false; entry.ms = Date.now() - t0; entry.mime = img.mime; entry.b64 = img.b64; entry.dataUrl = `data:${img.mime};base64,${img.b64}`;
-  entry.refs = refs.filter((r) => !lock || r !== refs[0]).slice(0, 2);
-  setStatus(note ? `완료! (${note})` : lock ? "완료! 원본 제품 이미지를 같은 자리에 합성했습니다." : "완료!", "ok");
-}
-
-/* ====================================================================
- * PSD 레이아웃 배너: PSD의 텍스트 레이어는 건드리지 않고, 텍스트 밖 영역에만 제품 + 배경을 생성합니다.
- * 결과는 원본 크기 PNG 미리보기와, 새 배경·제품 레이어를 넣고 기존 배경을 숨긴 PSD로 받습니다.
- * ==================================================================== */
-const TEXT_NAME = /text|텍스트|글자|문구|카피|copy|title|타이틀|headline|로고|logo/i;
-const GEN_RATIOS = { gemini: ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"], qwen: Object.keys(QWEN_SIZES), openai: Object.keys(OPENAI_SIZES) };
-const PSD_JOB_KEEP = 3; // 원본 크기 캔버스는 메모리를 많이 써서 최근 몇 개만 PSD 저장용으로 보관
-
-function psdActive() { return !!(state.psd && $("psdOn") && $("psdOn").checked); }
-
-function hasText(l) { return !!l.text || (l.children || []).some(hasText); }
-
-/* 맨 위 단계 레이어/그룹마다 '텍스트(유지)' 여부. 텍스트 레이어가 있거나 이름이 텍스트 계열이면 기본 유지 */
-function psdTopItems(psd) {
-  return (psd.children || []).map((l, i) => ({ i, name: l.name || `레이어 ${i + 1}`, group: !!l.children, keep: hasText(l) || TEXT_NAME.test(l.name || ""), hidden: !!l.hidden }));
-}
-
-function leafBounds(l, out) {
-  if (l.hidden || l.adjustment) return out;
-  if (l.children) { l.children.forEach((c) => leafBounds(c, out)); return out; }
-  if ((l.canvas || l.imageData) && l.right > l.left && l.bottom > l.top) out.push({ left: l.left, top: l.top, right: l.right, bottom: l.bottom });
-  return out;
-}
-
-/* 유지할 레이어들이 차지하는 영역(텍스트 영역) */
-function psdTextZone(psd, items) {
-  const bs = [];
-  items.filter((t) => t.keep).forEach((t) => leafBounds(psd.children[t.i], bs));
-  if (!bs.length) return null;
-  const W = psd.width, H = psd.height, pad = Math.round(Math.min(W, H) * 0.015);
-  return {
-    left: Math.max(0, Math.min(...bs.map((b) => b.left)) - pad), top: Math.max(0, Math.min(...bs.map((b) => b.top)) - pad),
-    right: Math.min(W, Math.max(...bs.map((b) => b.right)) + pad), bottom: Math.min(H, Math.max(...bs.map((b) => b.bottom)) + pad),
-  };
-}
-
-/* 텍스트 영역을 피한 가장 넓은 빈 곳(오른쪽 > 왼쪽 > 아래 > 위)에 제품 자리를 잡습니다. PSD 픽셀 좌표. */
-function psdProductSlot(W, H, z, cw, ch) {
-  const regions = z ? [
-    { x: z.right, y: 0, w: W - z.right, h: H }, { x: 0, y: 0, w: z.left, h: H },
-    { x: 0, y: z.bottom, w: W, h: H - z.bottom }, { x: 0, y: 0, w: W, h: z.top },
-  ] : [{ x: 0, y: 0, w: W, h: H }];
-  let best = null;
-  for (const r of regions) {
-    if (r.w < W * 0.12 || r.h < H * 0.12) continue;
-    const s = Math.min((r.w * 0.84) / cw, (r.h * 0.84) / ch, (H * 0.86) / ch);
-    const area = s * s * cw * ch;
-    if (!best || area > best.area * 1.15) best = { r, s, area };
-  }
-  if (!best) return null;
-  const w = cw * best.s, h = ch * best.s, r = best.r;
-  return { x: r.x + (r.w - w) / 2, y: r.y + r.h - h - r.h * 0.07, w, h };
-}
-
-function nearestGenRatio(provider, aspect) {
-  const list = GEN_RATIOS[provider] || RATIOS;
-  return list.reduce((a, b) => (Math.abs(Math.log(outputAspect(provider, b) / aspect)) < Math.abs(Math.log(outputAspect(provider, a) / aspect)) ? b : a));
-}
-
-/* 생성 이미지(gen 비율) 안에서 PSD 비율만큼 잘라 쓸 영역 (0~1) */
-function cropFor(genAspect, psdAspect) {
-  return genAspect > psdAspect ? { x: (1 - psdAspect / genAspect) / 2, y: 0, w: psdAspect / genAspect, h: 1 }
-    : { x: 0, y: (1 - genAspect / psdAspect) / 2, w: 1, h: genAspect / psdAspect };
-}
-
-function pct(v) { return Math.round(v * 100); }
-
-function psdLayoutPrompt(zoneG, slotG) {
-  const L = ["", "[Design-file layout] This image is the background of a banner whose text comes from a separate design file and will be overlaid later. Do not render any text, letters, numbers or logos anywhere in the image."];
-  if (zoneG) L.push(`The text area is x ${pct(zoneG.x)}%-${pct(zoneG.x + zoneG.w)}%, y ${pct(zoneG.y)}%-${pct(zoneG.y + zoneG.h)}% of the image (from the top-left). Inside it render no objects, people or patterns: only a calm, smooth, low-contrast continuation of the background (soft gradient or gentle light) so the overlaid text stays readable.`);
-  if (slotG) L.push(`The product stands at x ${pct(slotG.x)}%-${pct(slotG.x + slotG.w)}%, y ${pct(slotG.y)}%-${pct(slotG.y + slotG.h)}%. Concentrate the props, plants, light effects and details close around the product only.`);
-  L.push("Keep decoration restrained overall and the edges of the image simple; this is a clean commercial banner, not a busy illustration.");
-  return L.join("\n");
-}
-
-/* 현재 PSD + 제품 기준 배치 계산 (미리보기·자동 프롬프트·생성에서 공통 사용) */
-function psdLayout(provider, cut) {
-  const psd = state.psd.doc, W = psd.width, H = psd.height;
-  const zone = psdTextZone(psd, state.psd.items);
-  const slot = cut ? psdProductSlot(W, H, zone, cut.w, cut.h) : null;
-  const genRatio = nearestGenRatio(provider, W / H);
-  const crop = cropFor(outputAspect(provider, genRatio), W / H);
-  const toG = (b) => b && { x: crop.x + (b.x / W) * crop.w, y: crop.y + (b.y / H) * crop.h, w: (b.w / W) * crop.w, h: (b.h / H) * crop.h };
-  const zoneBox = zone && { x: zone.left, y: zone.top, w: zone.right - zone.left, h: zone.bottom - zone.top };
-  return { W, H, zone: zoneBox, slot, genRatio, crop, zoneG: toG(zoneBox), slotG: toG(slot) };
-}
-
-function makePsdPlate(lay, cut, provider) {
-  const ga = outputAspect(provider, lay.genRatio);
-  const PW = ga >= 1 ? 1024 : Math.round(1024 * ga), PH = ga >= 1 ? Math.round(1024 / ga) : 1024;
-  const c = document.createElement("canvas"); c.width = PW; c.height = PH;
-  const ctx = c.getContext("2d");
-  const g = ctx.createLinearGradient(0, 0, 0, PH); g.addColorStop(0, "#dcdee3"); g.addColorStop(1, "#c8cbd2");
-  ctx.fillStyle = g; ctx.fillRect(0, 0, PW, PH);
-  ctx.imageSmoothingQuality = "high";
-  const s = lay.slotG; ctx.drawImage(cut.canvas, s.x * PW, s.y * PH, s.w * PW, s.h * PH);
-  const dataUrl = c.toDataURL("image/jpeg", 0.92);
-  return { mime: "image/jpeg", b64: dataUrl.split(",")[1], dataUrl };
-}
-
-/* ---------- 유지 레이어 근사 렌더링 (클리핑은 source-atop, 보정 레이어·레이어 효과는 생략) ---------- */
-const BLEND = { normal: "source-over", "pass through": "source-over", multiply: "multiply", screen: "screen", overlay: "overlay", darken: "darken", lighten: "lighten", "color dodge": "color-dodge", "color burn": "color-burn", "hard light": "hard-light", "soft light": "soft-light", difference: "difference", exclusion: "exclusion", hue: "hue", saturation: "saturation", color: "color", luminosity: "luminosity" };
-
-function layerCanvas(l) {
-  if (l.canvas) return l.canvas;
-  if (!l.imageData) return null;
-  const c = document.createElement("canvas"); c.width = l.imageData.width; c.height = l.imageData.height;
-  c.getContext("2d").putImageData(l.imageData, 0, 0); l.canvas = c; return c;
-}
-
-function drawLayerList(ctx, list) {
-  for (let k = 0; k < list.length; k++) {
-    const l = list[k];
-    if (l.clipping) continue; // 기준 레이어와 함께 그림
-    const clips = []; for (let j = k + 1; j < list.length && list[j].clipping; j++) clips.push(list[j]);
-    if (l.hidden || l.adjustment) continue;
-    if (l.children) {
-      if ((l.opacity ?? 1) >= 1 && (!l.blendMode || l.blendMode === "pass through" || l.blendMode === "normal")) { drawLayerList(ctx, l.children); continue; }
-      const t = document.createElement("canvas"); t.width = ctx.canvas.width; t.height = ctx.canvas.height;
-      drawLayerList(t.getContext("2d"), l.children);
-      ctx.save(); ctx.globalAlpha = l.opacity ?? 1; ctx.globalCompositeOperation = BLEND[l.blendMode] || "source-over"; ctx.drawImage(t, 0, 0); ctx.restore();
-      continue;
-    }
-    let src = layerCanvas(l); if (!src) continue;
-    const vis = clips.filter((c) => !c.hidden && !c.adjustment && layerCanvas(c));
-    if (vis.length) {
-      const t = document.createElement("canvas"); t.width = src.width; t.height = src.height;
-      const tc = t.getContext("2d"); tc.drawImage(src, 0, 0);
-      vis.forEach((c) => { tc.save(); tc.globalAlpha = c.opacity ?? 1; tc.globalCompositeOperation = "source-atop"; tc.drawImage(layerCanvas(c), c.left - l.left, c.top - l.top); tc.restore(); });
-      src = t;
-    }
-    ctx.save(); ctx.globalAlpha = l.opacity ?? 1; ctx.globalCompositeOperation = BLEND[l.blendMode] || "source-over";
-    ctx.drawImage(src, l.left || 0, l.top || 0); ctx.restore();
-  }
-}
-
-function renderKept(ctx) {
-  const psd = state.psd.doc;
-  state.psd.items.filter((t) => t.keep).sort((a, b) => a.i - b.i).forEach((t) => drawLayerList(ctx, [psd.children[t.i]]));
-}
-
-function scaledCopy(src, maxSide) {
-  const s = Math.min(1, maxSide / Math.max(src.width, src.height));
-  const c = document.createElement("canvas"); c.width = Math.round(src.width * s); c.height = Math.round(src.height * s);
-  const ctx = c.getContext("2d"); ctx.imageSmoothingQuality = "high"; ctx.drawImage(src, 0, 0, c.width, c.height); return c;
-}
-
-async function generatePsdBanner(mm, entry, userPrompt, page, refs) {
-  const { cut, note } = await lockedProduct();
-  const lay = psdLayout(mm.provider, cut);
-  if (cut && !lay.slot) throw new Error("텍스트 영역을 피해 제품을 놓을 빈 공간이 없습니다. 레이어 목록에서 '텍스트(유지)' 선택을 확인해 주세요.");
-  if (cut) refs = [makePsdPlate(lay, cut, mm.provider), ...refs].slice(0, MAX_REFS);
-  const prompt = composePrompt(userPrompt, page, $("urlMode").value) + psdLayoutPrompt(lay.zoneG, cut ? lay.slotG : null) + (cut ? "\n" + LOCK_PROMPT : "");
-  entry.ratio = `PSD ${lay.W}×${lay.H}`;
-  state.history.unshift(entry); renderGallery();
-  setStatus(`${entry.label}로 PSD 배경 생성 중... (생성 비율 ${lay.genRatio} → ${lay.W}×${lay.H}로 맞춤)${note ? " · " + note : ""}`);
-  const t0 = Date.now();
-  const img = await generate(mm, prompt, refs, lay.genRatio, entry.quality);
-
-  setStatus("원본 크기로 맞추고 텍스트 레이어를 합성하는 중...");
-  const bmp = await createImageBitmap(b64ToBlob(img.b64, img.mime));
-  const bg = document.createElement("canvas"); bg.width = lay.W; bg.height = lay.H;
-  const bctx = bg.getContext("2d"); bctx.imageSmoothingQuality = "high";
-  bctx.drawImage(bmp, lay.crop.x * bmp.width, lay.crop.y * bmp.height, lay.crop.w * bmp.width, lay.crop.h * bmp.height, 0, 0, lay.W, lay.H);
-  let prod = null;
-  if (cut) {
-    const s = lay.slot; const pc = document.createElement("canvas"); pc.width = Math.max(1, Math.round(s.w)); pc.height = Math.max(1, Math.round(s.h));
-    const pctx = pc.getContext("2d"); pctx.imageSmoothingQuality = "high"; pctx.drawImage(cut.canvas, 0, 0, pc.width, pc.height);
-    prod = { canvas: pc, left: Math.round(s.x), top: Math.round(s.y) };
-  }
-  const full = document.createElement("canvas"); full.width = lay.W; full.height = lay.H;
-  const fctx = full.getContext("2d"); fctx.drawImage(bg, 0, 0);
-  if (prod) fctx.drawImage(prod.canvas, prod.left, prod.top);
-  renderKept(fctx);
-
-  const shown = scaledCopy(full, 1600).toDataURL("image/png");
-  entry.pending = false; entry.ms = Date.now() - t0; entry.mime = "image/png"; entry.b64 = shown.split(",")[1]; entry.dataUrl = shown;
-  entry.psdJob = { bg, prod, full, name: state.psd.name };
-  entry.refs = refs.filter((r, i) => !cut || i > 0).slice(0, 2);
-  state.history.filter((e) => e.psdJob).slice(PSD_JOB_KEEP).forEach((e) => { e.psdJob = null; e.psdDropped = true; });
-  setStatus(`완료! ${lay.W}×${lay.H} 원본 크기로 합성했습니다. 결과 카드에서 PNG·PSD로 저장하세요.${note ? " (" + note + ")" : ""}`, "ok");
-}
-
-/* 새 배경·제품 레이어를 맨 아래 그룹으로 넣고, 유지하지 않는 기존 레이어는 숨겨서 PSD로 씁니다. 원본 PSD 객체는 쓰고 나서 되돌립니다. */
-function buildPsdBlob(job) {
-  const psd = state.psd.doc;
-  const prevHidden = psd.children.map((l) => l.hidden); const prevCanvas = psd.canvas; const prevData = psd.imageData;
-  state.psd.items.forEach((t) => { if (!t.keep) psd.children[t.i].hidden = true; });
-  const kids = [{ name: "AI 배경", left: 0, top: 0, canvas: job.bg }];
-  if (job.prod) kids.push({ name: "제품 (원본)", left: job.prod.left, top: job.prod.top, canvas: job.prod.canvas });
-  psd.children.unshift({ name: "AI 생성 (Puture View)", opened: true, children: kids });
-  psd.canvas = job.full; delete psd.imageData;
-  try {
-    return new Blob([agPsd.writePsd(psd, { generateThumbnail: true, trimImageData: true })], { type: "image/vnd.adobe.photoshop" });
-  } finally {
-    psd.children.shift(); psd.children.forEach((l, i) => { l.hidden = prevHidden[i]; });
-    psd.canvas = prevCanvas; if (prevData) psd.imageData = prevData;
-  }
-}
-
-function downloadBlob(blob, name) {
-  const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = name;
-  document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 4000);
-}
-
-/* ---------- PSD 불러오기 UI ---------- */
-async function loadPsdFile(file) {
-  const info = $("psdInfo");
-  if (!/\.psd$/i.test(file.name)) { info.hidden = false; info.textContent = "PSD 파일만 지원합니다. 일러스트레이터(.ai)는 파일 > 내보내기 > 내보내기 형식 > Photoshop(.psd)로 '레이어 유지'를 켜고 저장해서 올려 주세요."; return; }
-  if (typeof agPsd === "undefined") { info.hidden = false; info.textContent = "PSD 라이브러리(lib/ag-psd.js)를 불러오지 못했습니다."; return; }
-  info.hidden = false; info.textContent = `${file.name} 읽는 중... (${(file.size / 1048576).toFixed(0)}MB)`;
-  await new Promise((r) => setTimeout(r, 30));
-  try {
-    const doc = agPsd.readPsd(await file.arrayBuffer(), { skipThumbnail: true });
-    if (doc.colorMode !== 3 || (doc.bitsPerChannel || 8) !== 8) throw new Error("RGB 8비트 PSD만 지원합니다. 포토샵에서 이미지 > 모드를 RGB, 8비트로 바꿔 저장해 주세요.");
-    state.psd = { doc, name: file.name.replace(/\.psd$/i, ""), items: psdTopItems(doc) };
-    $("psdOn").checked = true;
-    renderPsdPanel();
-  } catch (e) { state.psd = null; info.textContent = "PSD를 읽지 못했습니다: " + (e.message || e); renderPsdPanel(); }
-}
-
-function renderPsdPanel() {
-  const info = $("psdInfo"), list = $("psdLayers"), cv = $("psdPreview");
-  $("psdOnRow").hidden = !state.psd;
-  $("ratio").disabled = psdActive();
-  if (!state.psd) { list.textContent = ""; cv.hidden = true; return; }
-  const psd = state.psd.doc;
-  info.hidden = false;
-  info.textContent = `${state.psd.name}.psd · ${psd.width}×${psd.height}px · 결과도 이 크기로 나옵니다 (화면 비율 설정은 무시). 체크한 레이어는 그대로 두고, 나머지 영역만 새로 만듭니다.`;
-  list.textContent = "";
-  const head = document.createElement("small"); head.textContent = "그대로 둘 레이어 (체크 = 유지, 텍스트·로고 자동 선택)"; list.append(head);
-  state.psd.items.forEach((t) => {
-    const lb = document.createElement("label"); lb.className = "check";
-    const cb = document.createElement("input"); cb.type = "checkbox"; cb.checked = t.keep;
-    cb.addEventListener("change", () => { t.keep = cb.checked; drawPsdPreview(); });
-    lb.append(cb, document.createTextNode(` ${t.group ? "📁" : "▫"} ${t.name}${t.hidden ? " (원래 숨김)" : ""}`));
-    list.append(lb);
-  });
-  drawPsdPreview();
-}
-
-/* 원본 미리보기 위에 텍스트 영역(파랑)과 제품 자리(주황)를 표시 */
-async function drawPsdPreview() {
-  const cv = $("psdPreview"); if (!state.psd) return;
-  const psd = state.psd.doc; const src = psd.canvas;
-  const s = 400 / Math.max(psd.width, psd.height);
-  cv.width = Math.round(psd.width * s); cv.height = Math.round(psd.height * s); cv.hidden = false;
-  const ctx = cv.getContext("2d"); ctx.clearRect(0, 0, cv.width, cv.height);
-  if (src) { ctx.globalAlpha = 0.55; ctx.drawImage(src, 0, 0, cv.width, cv.height); ctx.globalAlpha = 1; }
-  const src2 = productSource(); let cut = null;
-  if (src2 && $("lockProduct").checked) { if (!src2.cut) src2.cut = await makeCutout(src2.blob); if (src2.cut.ok) cut = src2.cut; }
-  const lay = psdLayout(currentModel().provider === "custom" ? $("customProvider").value : currentModel().provider, cut);
-  const box = (b, color, label) => { if (!b) return; ctx.save(); ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.setLineDash([6, 4]); ctx.strokeRect(b.x * s, b.y * s, b.w * s, b.h * s); ctx.fillStyle = color; ctx.font = "bold 12px sans-serif"; ctx.fillText(label, b.x * s + 4, b.y * s + 14); ctx.restore(); };
-  box(lay.zone, "#2f6bff", "텍스트 (유지)");
-  if (lay.slot) { ctx.globalAlpha = 0.9; ctx.drawImage(cut.canvas, lay.slot.x * s, lay.slot.y * s, lay.slot.w * s, lay.slot.h * s); ctx.globalAlpha = 1; box(lay.slot, "#ff7a00", "제품"); }
-  $("psdNote").textContent = cut ? (lay.slot ? "주황 자리에 제품을 원본 그대로 놓고, 그 주변만 꾸밉니다." : "텍스트를 피할 빈 공간이 부족합니다.") : "제품 이미지(URL 대표 썸네일 또는 참조 이미지)를 넣으면 자리가 표시됩니다. 없으면 배경만 만듭니다.";
 }
 
 /* ====================================================================
@@ -1166,7 +882,6 @@ function buildAutoSystem() {
     "- Composition by aspect ratio: for portrait or square ratios put the product centered in the lower-middle area and keep the upper area clean for the headline; for landscape ratios put the product on the right and keep the left side for text.",
     "- Text: if copy text was given, render EXACTLY that string. Otherwise, if the format needs text (poster, banner, card news, mall detail, YouTube thumbnail, infographic), write a short Korean headline (max 14 characters), one sub line (max 22 characters) and 2-3 short feature labels (max 10 characters each) drawn from the facts, and put each exact string in double quotes with its position. Photographic formats get no text.",
     "- prompt_en: one rich paragraph of 110-220 words. prompt_ko: a faithful Korean version.",
-    "- If a design-file layout is given, it overrides the text and composition rules above: render no text at all, keep its text area calm and empty, and put the product exactly where it says.",
     `- ratio must be one of: ${ASSIST_RATIOS.join(", ")}; use the requested ratio.`,
     "JSON schema:",
     '{"product":{"name_ko":"","type_ko":"","look_ko":"","colors":["#hex"]},"selling_points_ko":[""],"scene_ko":"","copy":{"headline":"","sub":"","labels":[""]},"prompt_en":"","prompt_ko":"","ratio":"3:4"}',
@@ -1190,12 +905,6 @@ function buildAutoUser(o) {
     else if (p.desc) L.push(`Description: ${p.desc}`);
   } else L.push("No product page; infer everything from the image(s).");
   L.push(o.imageCount ? `${o.imageCount} image(s) attached; the first is the product thumbnail.` : "No image attached; rely on the facts.");
-  if (o.layout) {
-    const z = o.layout.zoneG, s = o.layout.slotG;
-    L.push(`Design-file layout: the banner text comes from a separate design file, so the image must contain NO text at all (leave copy fields empty). Aspect ratio ${o.layout.genRatio}.`);
-    if (z) L.push(`Text area to keep calm and empty: x ${pct(z.x)}-${pct(z.x + z.w)}%, y ${pct(z.y)}-${pct(z.y + z.h)}%.`);
-    if (s) L.push(`Product position: x ${pct(s.x)}-${pct(s.x + s.w)}%, y ${pct(s.y)}-${pct(s.y + s.h)}%. Decorate only around the product and keep the rest restrained.`);
-  }
   return L.join("\n");
 }
 
@@ -1261,14 +970,8 @@ async function runAutoPrompt(trigger) {
     if (!imgs.length && !(page && page.kind === "page")) { autoSay("상품 URL을 넣거나 이미지를 올리면 자동으로 프롬프트를 씁니다.", "err"); return; }
     autoSay(imgs.length ? "제품 이미지를 분석하고 어울리는 프롬프트를 쓰는 중... (10~30초)" : "페이지 정보로 프롬프트를 쓰는 중...");
     const preset = PRESETS.find((p) => p.id === $("autoStyle").value) || PRESETS[0];
-    let layout = null;
-    if (psdActive()) {
-      const { cut } = await lockedProduct();
-      const m = currentModel();
-      layout = psdLayout(m.provider === "custom" ? $("customProvider").value : m.provider, cut);
-    }
     const raw = await callAssist(key, state.assistModel || "gemini-2.5-flash", buildAutoSystem(),
-      buildAutoUser({ preset, ratio: layout ? layout.genRatio : $("ratio").value, copy: layout ? "" : $("copyText").value.trim(), page, imageCount: imgs.length, layout }), imgs);
+      buildAutoUser({ preset, ratio: $("ratio").value, copy: $("copyText").value.trim(), page, imageCount: imgs.length }), imgs);
     const r = normalizeAuto(parseJsonLoose(raw));
     if (!r.prompt_en) throw new Error("프롬프트가 비어 있습니다. 다시 시도해 주세요.");
     $("prompt").value = r.prompt_en; $("count").textContent = r.prompt_en.length; state.autoPromptText = r.prompt_en;
@@ -1632,12 +1335,6 @@ async function init() {
   $("autoPrompt").addEventListener("change", saveAutoPrefs);
   $("lockProduct").addEventListener("change", saveAutoPrefs);
   $("btnAutoPrompt").addEventListener("click", () => runAutoPrompt("button"));
-
-  // PSD 레이아웃
-  $("psdFile").addEventListener("change", () => { const f = $("psdFile").files[0]; if (f) loadPsdFile(f); });
-  $("btnPsdClear").addEventListener("click", () => { state.psd = null; $("psdFile").value = ""; $("psdInfo").hidden = true; $("psdNote").textContent = ""; renderPsdPanel(); });
-  $("psdOn").addEventListener("change", () => { $("ratio").disabled = psdActive(); });
-  $("lockProduct").addEventListener("change", () => { if (state.psd) drawPsdPreview(); });
 
   $("btnGen").addEventListener("click", onGenerate);
   $("btnClear").addEventListener("click", () => { state.history = []; renderGallery(); });
