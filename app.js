@@ -560,12 +560,20 @@ function productSource() {
 }
 
 /* ---------- 제공자별 이미지 생성 ---------- */
+/* 안전 필터 거절은 원인과 대처를 한국어로 알려 줍니다 */
+function safetyError(label) {
+  const e = new Error(`${label} 안전 필터 거절: 실존 인물 사진(얼굴) 편집이나 유명 캐릭터·브랜드(예: 피카츄)가 들어간 요청은 막히는 경우가 많습니다. 다른 제공자(예: ${label === "Gemini" ? "OpenAI·Qwen" : "Gemini"})로 시도하거나, 직접 만든 캐릭터로 바꿔 보세요.`);
+  e.safety = true;
+  return e;
+}
+
 async function httpError(res, label) {
-  let detail = "";
+  let detail = "", code = "";
   try {
     const t = await res.text();
-    try { const j = JSON.parse(t); detail = (j.error && (j.error.message || JSON.stringify(j.error))) || j.message || t; } catch (e) { detail = t; }
+    try { const j = JSON.parse(t); code = (j.error && j.error.code) || ""; detail = (j.error && (j.error.message || JSON.stringify(j.error))) || j.message || t; } catch (e) { detail = t; }
   } catch (e) { /* 무시 */ }
+  if (code === "moderation_blocked" || /safety system|rejected by the safety|content policy|moderation/i.test(detail)) return safetyError(label);
   return new Error(`${label} 오류 (HTTP ${res.status}) ${String(detail).slice(0, 400)}`);
 }
 
@@ -588,6 +596,8 @@ async function genGemini(key, model, prompt, refs, ratio, size) {
   const j = await res.json();
   const cand = j.candidates && j.candidates[0];
   const p = cand && cand.content && cand.content.parts ? cand.content.parts.find((x) => x.inlineData && x.inlineData.data) : null;
+  const why = [cand && cand.finishReason, j.promptFeedback && j.promptFeedback.blockReason].join(" ");
+  if (!p && /SAFETY|PROHIBITED|BLOCKLIST|RECITATION/.test(why)) throw safetyError("Gemini");
   if (!p) throw new Error("이미지가 생성되지 않았습니다. 프롬프트를 바꿔 다시 시도해 주세요." + (j.promptFeedback ? " (" + JSON.stringify(j.promptFeedback) + ")" : ""));
   return { mime: p.inlineData.mimeType || "image/png", b64: p.inlineData.data };
 }
@@ -867,7 +877,9 @@ function finishStatus(results, single) {
     return setStatus(note ? `완료! (${note})` : single && single.lock ? "완료! 원본 제품 이미지를 같은 자리에 합성했습니다." : "완료!", "ok");
   }
   const parts = [`완료! ${ok.length}/${results.length}장 생성`];
-  if (errs.length) parts.push(`실패 ${errs.length}장 (${errs[0].error.slice(0, 60)})`);
+  const safe = errs.filter((e) => /안전 필터 거절/.test(e.error));
+  if (safe.length) parts.push(`안전 필터 거절 ${safe.length}장 (${safe[0].error.split(": ").slice(1).join(": ")})`);
+  if (errs.length > safe.length) { const o = errs.find((e) => !safe.includes(e)); parts.push(`실패 ${errs.length - safe.length}장 (${o.error.slice(0, 60)})`); }
   if (same.length) parts.push(`첨부 이미지와 거의 같음 ${same.length}장`);
   if (results.some((e) => e.draft)) parts.push("마음에 드는 시안의 '⬆ 고화질로'를 누르세요");
   if (note) parts.push(note);
