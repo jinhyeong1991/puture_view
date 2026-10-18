@@ -170,3 +170,7 @@ dialog::backdrop { background:rgba(0,0,0,.45); }
 .videobox a { display:inline-block; margin-top:6px; font-size:13px; }
 .vnote { font-size:13px; color:var(--sub); }
 .vnote.err { color:var(--err); }
+
+.vassist { border:1px solid var(--line); border-radius:10px; padding:10px 12px; margin:6px 0 10px; background:var(--bg); }
+.vassist h3 { margin:0 0 6px; font-size:14px; }
+.vassist .primary { margin-top:4px; }

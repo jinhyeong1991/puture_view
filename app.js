@@ -1010,17 +1010,175 @@ function videoUrlOf(out) {
   return out.url || out.video || (out.video && out.video.url) || "";
 }
 
+/* ---------- ✨ 영상 프롬프트 도우미: 이미지 + 원하는 장면 + 카메라·효과·분위기 -> 시간대별 대본과 영어 프롬프트 ---------- */
+const VIDEO_CAMS = [
+  { id: "auto", label: "AI 추천", en: "" },
+  { id: "push", label: "천천히 다가가기", en: "slow cinematic push-in (dolly in) toward the main subject" },
+  { id: "pull", label: "멀어지며 전체 보여주기", en: "slow pull-out (dolly out) revealing the whole scene" },
+  { id: "orbit", label: "주위를 돌기", en: "smooth half orbit around the main subject" },
+  { id: "pan", label: "옆으로 이동", en: "gentle lateral tracking (truck) move from left to right" },
+  { id: "crane", label: "위로 올라가기", en: "rising crane shot that tilts down slightly" },
+  { id: "handheld", label: "핸드헬드", en: "subtle handheld camera with natural micro-shake, documentary feel" },
+  { id: "static", label: "고정", en: "locked-off static camera, no camera movement" },
+];
+const VIDEO_FX = [
+  { id: "slowmo", label: "슬로모션", en: "slow motion" },
+  { id: "light", label: "빛이 스쳐 지나감", en: "a soft light sweep gliding across the subject" },
+  { id: "sparkle", label: "반짝이·입자", en: "floating sparkles and light particles" },
+  { id: "flare", label: "렌즈 플레어", en: "warm lens flare" },
+  { id: "bokeh", label: "배경 흐림", en: "shallow depth of field with creamy background bokeh" },
+  { id: "wind", label: "바람에 흔들림", en: "a light breeze moving hair, fabric and leaves" },
+  { id: "zap", label: "번쩍 전기 효과", en: "playful bright electric sparks" },
+];
+const VIDEO_MOODS = [
+  { id: "auto", label: "AI 추천", en: "" },
+  { id: "bright", label: "밝고 경쾌", en: "bright, cheerful and upbeat" },
+  { id: "premium", label: "고급스럽게", en: "premium, elegant and calm" },
+  { id: "funny", label: "유쾌한 패러디", en: "playful, funny parody tone" },
+  { id: "emotional", label: "감성적", en: "warm, emotional and cozy" },
+  { id: "dynamic", label: "역동적", en: "energetic and dynamic" },
+];
+const vsel = { cam: "auto", fx: new Set(), mood: "auto" };
+
+function renderVideoChips() {
+  const make = (box, list, isOn, onClick, radio) => {
+    box.textContent = "";
+    list.forEach((it) => {
+      const b = document.createElement("button"); b.type = "button"; b.className = "rchip" + (isOn(it) ? " on" : "");
+      b.setAttribute("role", radio ? "radio" : "checkbox"); b.setAttribute("aria-checked", String(isOn(it))); b.textContent = it.label;
+      b.addEventListener("click", () => { onClick(it); renderVideoChips(); });
+      box.append(b);
+    });
+  };
+  make($("vdCam"), VIDEO_CAMS, (it) => vsel.cam === it.id, (it) => (vsel.cam = it.id), true);
+  make($("vdFx"), VIDEO_FX, (it) => vsel.fx.has(it.id), (it) => (vsel.fx.has(it.id) ? vsel.fx.delete(it.id) : vsel.fx.add(it.id)), false);
+  make($("vdMood"), VIDEO_MOODS, (it) => vsel.mood === it.id, (it) => (vsel.mood = it.id), true);
+}
+
+function videoChoices() {
+  return {
+    cam: VIDEO_CAMS.find((c) => c.id === vsel.cam), mood: VIDEO_MOODS.find((m) => m.id === vsel.mood),
+    fx: VIDEO_FX.filter((f) => vsel.fx.has(f.id)),
+  };
+}
+
+function buildVideoSystem() {
+  return [
+    "You are a film director and prompt engineer for image-to-video models (MiniMax H3). The attached image is the FIRST FRAME of the video.",
+    "Return ONLY one valid JSON object, no markdown fences, no commentary.",
+    "Rules:",
+    "- Look at the image carefully (people, product, character, text, background, light) and describe it briefly in analysis_ko.",
+    "- Write ONE continuous shot that starts exactly from this frame. Split the requested duration into 2-4 time beats (e.g. 0-2s, 2-4s, 4-5s) that add up to exactly the duration. Each beat says what moves, the camera, and any effect.",
+    "- Use the user's requested scene idea, camera move, effects and mood when given; when 'AI choice', pick what suits the image and say why in tips_ko.",
+    "- Keep identity and design: the same faces, hairstyles, clothing, product shape, logo and any text stay unchanged and legible. No new people, no morphing, no extra limbs. Motion should be physically plausible and not too fast for the duration.",
+    "- prompt_en: 60-140 words, present tense, starts with the subject and action, then the time beats, then camera, lighting/effects and mood, ending with the consistency constraints. No markdown.",
+    "- prompt_ko: a natural, faithful Korean version of prompt_en for the user to read and edit.",
+    "- script: Korean beat lines for the user (time, action, camera, effect). All *_ko fields are in Korean.",
+    "- If a revision request is given, revise the current script/prompt accordingly and keep everything the user did not ask to change.",
+    "JSON schema:",
+    '{"analysis_ko":"","script":[{"t":"0-2s","action_ko":"","camera_ko":"","effect_ko":""}],"camera_en":"","effects_en":[""],"mood_en":"","prompt_en":"","prompt_ko":"","tips_ko":""}',
+  ].join("\n");
+}
+
+function buildVideoUser(o) {
+  const L = [`Duration: ${o.duration} seconds. Resolution: ${o.resolution}.`];
+  L.push(`Scene idea from the user (Korean, may be empty): ${o.idea || "(none - suggest something natural for this image)"}`);
+  L.push(`Camera move: ${o.cam && o.cam.en ? o.cam.en : "AI choice"}`);
+  L.push(`Effects: ${o.fx.length ? o.fx.map((f) => f.en).join("; ") : "AI choice (0-2 subtle effects)"}`);
+  L.push(`Mood: ${o.mood && o.mood.en ? o.mood.en : "AI choice"}`);
+  if (o.imagePrompt) L.push(`The image was generated from this prompt (context only): ${o.imagePrompt.slice(0, 600)}`);
+  if (o.fix) {
+    L.push("", "Current script (Korean):", o.curScript || "(none)", "Current prompt (Korean):", o.curKo || "(none)", "Current prompt (English):", o.curEn || "(none)");
+    L.push(`Revision request from the user (Korean): ${o.fix}`);
+  }
+  return L.join("\n");
+}
+
+function scriptText(r) {
+  const L = [];
+  (r.script || []).forEach((b) => L.push(`[${b.t || ""}] ${b.action_ko || ""}${b.camera_ko ? ` · 카메라: ${b.camera_ko}` : ""}${b.effect_ko ? ` · 효과: ${b.effect_ko}` : ""}`));
+  if (r.tips_ko) L.push("", `팁: ${r.tips_ko}`);
+  return L.join("\n");
+}
+
+/* Gemini 키가 없을 때: 고른 카메라·효과·분위기로 기본 프롬프트만 조합 */
+function composeVideoLocal(o) {
+  const a = Math.max(1, Math.round(o.duration * 0.4)), b = Math.max(a + 1, Math.round(o.duration * 0.8));
+  const cam = (o.cam && o.cam.en) || "slow cinematic push-in toward the main subject";
+  const fx = o.fx.length ? o.fx.map((f) => f.en).join(", ") : "soft natural light";
+  const mood = (o.mood && o.mood.en) || "natural and pleasant";
+  const idea = o.idea ? `Scene: ${o.idea}. ` : "";
+  const prompt = `${idea}Starting exactly from this image, the subject comes to life with subtle natural motion. 0-${a}s: gentle movement begins (breathing, blinking, small gestures). ${a}-${b}s: the main action unfolds smoothly. ${b}-${o.duration}s: it settles into a clean final pose. Camera: ${cam}. Effects: ${fx}. Mood: ${mood}. Keep every face, product, logo and text exactly as in the image; no new objects, no morphing.`;
+  const script = [`[0-${a}s] 살짝 움직이기 시작 (숨쉬기·눈 깜빡임·작은 동작)`, `[${a}-${b}s] ${o.idea || "주요 동작"}`, `[${b}-${o.duration}s] 자연스럽게 마무리 포즈`,
+    `카메라: ${(o.cam && o.cam.id !== "auto" ? o.cam.label : "천천히 다가가기")} · 효과: ${o.fx.map((f) => f.label).join(", ") || "자연광"} · 분위기: ${(o.mood && o.mood.id !== "auto" ? o.mood.label : "자연스럽게")}`,
+    "", "팁: Gemini API 키를 넣으면 이미지를 보고 더 구체적인 대본을 써 줍니다."].join("\n");
+  const ko = `${o.idea ? `장면: ${o.idea}. ` : ""}이 이미지에서 그대로 시작해 자연스럽게 움직입니다. 0-${a}초: 숨쉬기·눈 깜빡임 같은 작은 움직임. ${a}-${b}초: 주요 동작이 부드럽게 이어짐. ${b}-${o.duration}초: 깔끔한 마무리 포즈. 카메라: ${(o.cam && o.cam.id !== "auto" ? o.cam.label : "천천히 다가가기")}. 효과: ${o.fx.map((f) => f.label).join(", ") || "자연광"}. 분위기: ${(o.mood && o.mood.id !== "auto" ? o.mood.label : "자연스럽게")}. 얼굴·제품·로고·글자는 이미지 그대로 유지.`;
+  return { prompt, script, ko };
+}
+
+let videoWriting = false;
+async function writeVideoPrompt(e, fix) {
+  if (videoWriting) return;
+  const o = Object.assign(videoChoices(), { idea: $("vdIdea").value.trim(), duration: Number($("vdSec").value), resolution: $("vdRes").value, imagePrompt: e.prompt,
+    fix, curScript: $("vdScript").value.trim(), curKo: $("vdPromptKo").value.trim(), curEn: $("vdPrompt").value.trim() });
+  const say = (t, k) => { $("vdWriteStatus").textContent = t; $("vdWriteStatus").className = "status" + (k ? " " + k : ""); };
+  if (!state.keys.gemini) {
+    if (fix) { say("수정 요청은 Gemini API 키가 있어야 합니다. 대본과 프롬프트를 직접 고쳐 주세요.", "err"); return; }
+    const r = composeVideoLocal(o); $("vdScript").value = r.script; $("vdPrompt").value = r.prompt; $("vdPromptKo").value = r.ko;
+    state.vdSynced = { ko: r.ko, en: r.prompt };
+    say("Gemini 키가 없어 고른 옵션으로 기본 대본을 만들었습니다.", "ok"); return;
+  }
+  videoWriting = true; $("btnVdWrite").disabled = true; $("btnVdFix").disabled = true;
+  say(fix ? "요청대로 고치는 중... (10~20초)" : "이미지를 보고 대본을 쓰는 중... (10~20초)");
+  try {
+    const img = await blobToResized(b64ToBlob(e.b64, e.mime), 1024);
+    const raw = await callAssist(state.keys.gemini, state.assistModel || "gemini-2.5-flash", buildVideoSystem(), buildVideoUser(o), [img]);
+    const r = parseJsonLoose(raw) || {};
+    if (!r.prompt_en) throw new Error("영상 프롬프트가 비어 있습니다. 다시 눌러 주세요.");
+    $("vdScript").value = (r.analysis_ko ? `이미지: ${r.analysis_ko}\n\n` : "") + scriptText(r);
+    $("vdPrompt").value = String(r.prompt_en).trim();
+    $("vdPromptKo").value = String(r.prompt_ko || "").trim();
+    state.vdSynced = { ko: $("vdPromptKo").value, en: $("vdPrompt").value };
+    if (fix) $("vdFix").value = "";
+    say(fix ? "고쳤습니다! 더 바꿀 점이 있으면 다시 요청하세요." : "완료! 대본과 프롬프트를 넣었습니다. 바꾸고 싶으면 아래 '수정 요청'에 적어 주세요.", "ok");
+  } catch (err) {
+    say(err.message || String(err), "err");
+  } finally { videoWriting = false; $("btnVdWrite").disabled = false; $("btnVdFix").disabled = false; }
+}
+
+/* 한국어 프롬프트를 직접 고쳤으면 생성 직전에 영어로 번역해서 보냅니다 (키가 없으면 한국어 그대로) */
+async function videoPromptToSend() {
+  const ko = $("vdPromptKo").value.trim(), en = $("vdPrompt").value.trim();
+  if (!ko || (state.vdSynced && ko === state.vdSynced.ko)) return en || ko || VIDEO_DEFAULT_PROMPT;
+  if (!state.keys.gemini) return ko;
+  const sys = 'Translate the user\'s Korean image-to-video prompt into a concise, natural English prompt for MiniMax H3. Keep every time beat, camera move, effect and consistency rule. Return ONLY JSON: {"prompt_en":""}';
+  const r = parseJsonLoose(await callAssist(state.keys.gemini, state.assistModel || "gemini-2.5-flash", sys, ko, [])) || {};
+  return String(r.prompt_en || "").trim() || ko;
+}
+
 function openVideoDialog(e) {
   if (!state.keys.eachlabs) { setStatus("동영상은 eachlabs API 키가 필요합니다. ⚙ API 키 설정에서 입력하세요.", "err"); $("dlg").showModal(); return; }
   const dlg = $("videoDlg");
   $("vdImg").src = e.dataUrl;
-  if (!$("vdPrompt").value.trim()) $("vdPrompt").value = VIDEO_DEFAULT_PROMPT;
+  renderVideoChips();
+  $("vdWriteStatus").textContent = "";
+  // 카드마다 대본이 다르므로 다른 카드에서 열면 새로 씁니다
+  if (state.videoFor !== e) { state.videoFor = e; $("vdScript").value = ""; $("vdPromptKo").value = ""; $("vdPrompt").value = VIDEO_DEFAULT_PROMPT; state.vdSynced = null; }
+  $("btnVdWrite").onclick = () => writeVideoPrompt(e);
+  $("btnVdFix").onclick = () => { const f = $("vdFix").value.trim(); if (f) writeVideoPrompt(e, f); else $("vdFix").focus(); };
+  $("vdFix").onkeydown = (ev) => { if (ev.key === "Enter") { ev.preventDefault(); $("btnVdFix").click(); } };
+  if (!$("vdScript").value.trim()) writeVideoPrompt(e);
   const refresh = () => { $("vdCost").textContent = `예상 비용: ${videoCost($("vdRes").value, Number($("vdSec").value))} · 생성 시간 보통 3~6분`; };
   $("vdRes").onchange = refresh; $("vdSec").onchange = refresh; refresh();
   $("vdBalance").textContent = "잔액 확인 중...";
   eachlabsBalance().then((b) => { $("vdBalance").textContent = b == null ? "잔액을 확인하지 못했습니다." : `eachlabs 잔액: $${b.toFixed(2)} (≈ ${Math.round(b * USD_KRW).toLocaleString()}원)`; });
   dlg.returnValue = "";
-  dlg.addEventListener("close", () => { if (dlg.returnValue === "go") startVideo(e, { prompt: $("vdPrompt").value.trim() || VIDEO_DEFAULT_PROMPT, resolution: $("vdRes").value, duration: Number($("vdSec").value) }); }, { once: true });
+  dlg.addEventListener("close", async () => {
+    if (dlg.returnValue !== "go") return;
+    const opt = { resolution: $("vdRes").value, duration: Number($("vdSec").value) };
+    try { opt.prompt = await videoPromptToSend(); } catch (err) { setStatus("프롬프트 번역 실패: " + (err.message || err) + " · 한국어 그대로 보냅니다.", "err"); opt.prompt = $("vdPromptKo").value.trim() || VIDEO_DEFAULT_PROMPT; }
+    startVideo(e, opt);
+  }, { once: true });
   dlg.showModal();
 }
 

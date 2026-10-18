@@ -217,8 +217,24 @@
     <h2 id="vdTitle">🎬 동영상 만들기</h2>
     <p class="hint">이 이미지를 첫 장면으로 MiniMax H3 Max가 움직이는 영상을 만듭니다 (eachlabs 경유).</p>
     <img id="vdImg" class="vdimg" alt="첫 장면으로 쓸 이미지">
-    <label class="field"><span>움직임 설명 (영어 권장)</span><textarea id="vdPrompt" rows="4"></textarea>
-      <small>예) The man smiles and waves at the camera while Pikachu jumps beside him. Slow camera push-in.</small></label>
+    <section class="vassist" aria-labelledby="vaTitle">
+      <h3 id="vaTitle">✨ 영상 프롬프트 도우미</h3>
+      <label class="field"><span>원하는 장면 (한국어로 짧게, 선택)</span>
+        <input id="vdIdea" type="text" placeholder="예) 피카츄가 어깨에 뛰어올라 둘이 함께 웃는다"></label>
+      <div class="field"><span>카메라 무빙</span><div id="vdCam" class="rolebar" role="radiogroup" aria-label="카메라 무빙"></div></div>
+      <div class="field"><span>효과 (여러 개 선택 가능)</span><div id="vdFx" class="rolebar" aria-label="효과"></div></div>
+      <div class="field"><span>분위기</span><div id="vdMood" class="rolebar" role="radiogroup" aria-label="분위기"></div></div>
+      <button id="btnVdWrite" type="button" class="primary alt">✨ 이미지 보고 대본·프롬프트 쓰기</button>
+      <p id="vdWriteStatus" class="status" role="status" aria-live="polite"></p>
+      <label class="field"><span>대본 (시간대별 장면 · 카메라 · 효과)</span><textarea id="vdScript" rows="6" placeholder="창을 열면 도우미가 자동으로 대본을 씁니다. 직접 고쳐도 됩니다."></textarea></label>
+      <label class="field"><span>영상 프롬프트 (한국어로 확인·수정)</span><textarea id="vdPromptKo" rows="5"></textarea>
+        <small>직접 고치면 생성할 때 영어로 자동 번역해서 보냅니다.</small></label>
+      <div class="field"><span>수정 요청</span>
+        <div class="row"><input id="vdFix" type="text" placeholder="예) 더 웃기게, 피카츄가 먼저 등장하게, 카메라는 고정으로">
+        <button id="btnVdFix" type="button" class="ghost">✏️ 고쳐줘</button></div></div>
+    </section>
+    <details class="pvdetails"><summary>실제로 보내는 영어 프롬프트 보기</summary>
+      <textarea id="vdPrompt" rows="5" aria-label="실제로 보내는 영어 프롬프트"></textarea></details>
     <div class="grid2">
       <label class="field"><span>해상도</span>
         <select id="vdRes"><option value="480P" selected>480P (시험용, 가장 저렴)</option><option value="768P">768P (기본)</option><option value="1080P">1080P (선명, 비쌈)</option></select></label>
