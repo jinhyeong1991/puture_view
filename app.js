@@ -23,7 +23,7 @@ const DEFAULT_QWEN_BASE = "https://ap-southeast-1.maas.qwencloudapi.com";
 
 const MODELS = [
   { id: "gemini-3.1-flash-image", usd: 0.067, usd2k: 0.10, provider: "gemini", label: "Gemini 3.1 Flash Image", cost: "1K 약 $0.067 / 2K 약 $0.10", note: "한글 문구가 정확한 편, 참조 이미지 지원" },
-  { id: "gemini-3-pro-image", usd: 0.13, provider: "gemini", label: "Gemini 3 Pro Image", cost: "약 $0.13", note: "고품질, 비용 높음" },
+  { id: "gemini-3-pro-image", usd: 0.13, usd4k: 0.24, provider: "gemini", label: "Gemini 3 Pro Image", cost: "1K·2K 약 $0.13 / 4K 약 $0.24", note: "고품질, 4K 지원, 비용 높음" },
   { id: "gemini-2.5-flash-image", usd: 0.04, provider: "gemini", label: "Gemini 2.5 Flash Image", cost: "약 $0.04 (제3자 자료)", note: "구형. 단종됐을 수 있음" },
   { id: "gemini-nano-banana-2.1", provider: "gemini", label: "Gemini Nano Banana 2.1", cost: "확인 필요", note: "목록에서만 확인한 모델(미검증)" },
   { id: "qwen-image-3.0", usd: 0.03, provider: "qwen", label: "Qwen-Image-3.0", cost: "약 $0.03 + 입력 이미지 장당 $0.003", note: "저렴. 한글 글자가 가끔 틀림" },
@@ -39,29 +39,47 @@ const MODELS = [
 const PROVIDER_LABEL = { gemini: "Gemini", qwen: "QwenCloud", openai: "OpenAI" };
 
 /* 직접 생성에 성공해 본 모델 (나머지는 목록에서만 확인한 모델) */
-const VERIFIED = new Set(["gemini-3.1-flash-image", "qwen-image-3.0", "qwen-image-3.0-pro", "gpt-image-2.5-sunburst"]);
+const VERIFIED = new Set(["gemini-3.1-flash-image", "gemini-3-pro-image", "qwen-image-3.0", "qwen-image-3.0-pro", "gpt-image-2.5-sunburst"]);
 
 const RATIOS = ["1:1", "3:4", "4:5", "9:16", "4:3", "16:9"];
 
 /* 비율 -> 제공자별 크기 매핑 */
 const QWEN_SIZES = { "1:1": "1328*1328", "3:4": "1104*1472", "4:5": "1104*1472", "9:16": "928*1664", "4:3": "1472*1104", "16:9": "1664*928" };
+/* Qwen 2K(최고): 긴 변 2048 */
+const QWEN_2K_SIZES = { "1:1": "2048*2048", "3:4": "1536*2048", "4:5": "1536*2048", "9:16": "1152*2048", "4:3": "2048*1536", "16:9": "2048*1152" };
+function qwenSize(ratio, quality) { return (quality === "2K" ? QWEN_2K_SIZES : QWEN_SIZES)[ratio] || QWEN_SIZES["1:1"]; }
 const OPENAI_SIZES = { "1:1": "1024x1024", "3:4": "1024x1536", "4:5": "1024x1536", "9:16": "1024x1536", "4:3": "1536x1024", "16:9": "1536x1024" };
+/* GPT Image 2.5 4K: 변은 16의 배수, 긴 변 3840 이하, 전체 8,294,400픽셀 이하 */
+const OPENAI_4K = new Set(["gpt-image-2.5-sunburst", "gpt-image-2.5-flare"]);
+const OPENAI_4K_SIZES = { "1:1": "2880x2880", "3:4": "2480x3312", "4:5": "2576x3216", "9:16": "2160x3840", "4:3": "3312x2480", "16:9": "3840x2160" };
+function openaiSize(ratio, quality) { return (quality === "4K" ? OPENAI_4K_SIZES[ratio] : OPENAI_SIZES[ratio]) || "1024x1024"; }
 
-function ratioNote(provider, ratio) {
+function ratioNote(provider, ratio, quality) {
   if (provider === "gemini") return "";
   if (provider === "qwen") return ratio === "4:5" ? "Qwen은 4:5가 없어 3:4로 생성됩니다." : "";
   if (provider === "openai") {
-    if (ratio === "1:1") return "";
+    if (ratio === "1:1" || quality === "4K") return "";
     if (["3:4", "4:5", "9:16"].includes(ratio)) return "OpenAI는 세로 1024x1536(2:3)으로 생성됩니다. 필요하면 잘라서 쓰세요.";
     return "OpenAI는 가로 1536x1024(3:2)로 생성됩니다. 필요하면 잘라서 쓰세요.";
   }
   return "";
 }
 
-function qualityOptions(provider) {
-  if (provider === "gemini") return { label: "해상도", opts: [["1K", "1K (저렴)"], ["2K", "2K (선명, 더 비쌈)"]], def: "1K", note: "" };
-  if (provider === "openai") return { label: "품질", opts: [["low", "low (저렴)"], ["medium", "medium"], ["high", "high (최고, 더 비쌈)"]], def: "medium", note: "" };
-  return { label: "품질", opts: [["auto", "자동"]], def: "auto", note: "Qwen은 품질 옵션이 없습니다." };
+/* 4K(imageSize "4K")를 지원하는 Gemini 모델 */
+const GEMINI_4K = new Set(["gemini-3-pro-image"]);
+
+function qualityOptions(provider, modelId) {
+  if (provider === "gemini") {
+    const opts = [["1K", "1K (저렴)"], ["2K", "2K (선명, 더 비쌈)"]];
+    if (GEMINI_4K.has(modelId)) opts.push(["4K", "4K (최고 해상도, 가장 비쌈)"]);
+    return { label: "해상도", opts, def: "1K", note: "" };
+  }
+  if (provider === "openai") {
+    const opts = [["low", "low (저렴)"], ["medium", "medium"], ["high", "high (최고, 더 비쌈)"]];
+    if (OPENAI_4K.has(modelId)) opts.push(["4K", "high + 4K 해상도 (가장 비쌈)"]);
+    return { label: "품질", opts, def: "medium", note: "" };
+  }
+  return { label: "해상도", opts: [["auto", "기본 (약 1.3K)"], ["2K", "2K (최고, 긴 변 2048)"]], def: "auto", note: "Qwen은 4K가 없고 2K가 최고입니다." };
 }
 
 /* ---------- 상태 ---------- */
@@ -446,8 +464,8 @@ const LOCK_PROMPT = [
 ].join("\n");
 
 /* 제공자가 실제로 돌려주는 이미지의 가로/세로 비 */
-function outputAspect(provider, ratio) {
-  const size = provider === "qwen" ? QWEN_SIZES[ratio] : provider === "openai" ? OPENAI_SIZES[ratio] : "";
+function outputAspect(provider, ratio, quality) {
+  const size = provider === "qwen" ? qwenSize(ratio, quality) : provider === "openai" ? openaiSize(ratio, quality) : "";
   const [a, b] = (size || ratio || "1:1").split(/[*x:]/).map(Number);
   return a > 0 && b > 0 ? a / b : 1;
 }
@@ -602,10 +620,10 @@ async function genGemini(key, model, prompt, refs, ratio, size) {
   return { mime: p.inlineData.mimeType || "image/png", b64: p.inlineData.data };
 }
 
-async function genQwen(key, base, model, prompt, refs, ratio) {
+async function genQwen(key, base, model, prompt, refs, ratio, quality) {
   const content = refs.map((r) => ({ image: `data:${r.mime};base64,${r.b64}` }));
   content.push({ text: prompt });
-  const size = QWEN_SIZES[ratio] || QWEN_SIZES["1:1"];
+  const size = qwenSize(ratio, quality);
   const url = `${(base || DEFAULT_QWEN_BASE).replace(/\/+$/, "")}/api/v1/services/aigc/multimodal-generation/generation`;
   const res = await fetch(url, {
     method: "POST",
@@ -625,7 +643,8 @@ async function genQwen(key, base, model, prompt, refs, ratio) {
 }
 
 async function genOpenAI(key, model, prompt, refs, ratio, quality) {
-  const size = OPENAI_SIZES[ratio] || "1024x1024";
+  const size = openaiSize(ratio, quality);
+  if (quality === "4K") quality = "high";
   let res;
   if (refs.length) {
     const fd = new FormData();
@@ -652,7 +671,7 @@ async function generate(m, prompt, refs, ratio, quality) {
   const key = state.keys[m.provider];
   if (!key) throw new Error(`${PROVIDER_LABEL[m.provider] || m.provider} API 키가 없습니다. ⚙ API 키 설정에서 입력하세요.`);
   if (m.provider === "gemini") return genGemini(key, m.id, prompt, refs, ratio, quality);
-  if (m.provider === "qwen") return genQwen(key, state.qwenBase, m.id, prompt, refs, ratio);
+  if (m.provider === "qwen") return genQwen(key, state.qwenBase, m.id, prompt, refs, ratio, quality);
   if (m.provider === "openai") return genOpenAI(key, m.id, prompt, refs, ratio, quality);
   throw new Error("알 수 없는 제공자입니다.");
 }
@@ -730,7 +749,7 @@ function refreshModelUi() {
   const meta = allModels().find((x) => x.id === $("model").value);
   $("modelNote").textContent = meta ? `선택: ${meta.label}${meta.note ? " — " + meta.note : ""}` : "";
   const prov = m.provider === "custom" ? $("customProvider").value : m.provider;
-  const q = qualityOptions(prov);
+  const q = qualityOptions(prov, m.provider === "custom" ? $("customModel").value.trim() : m.id);
   const sel = $("quality"); const prev = sel.value;
   sel.textContent = "";
   q.opts.forEach(([v, t]) => { const o = document.createElement("option"); o.value = v; o.textContent = t; sel.append(o); });
@@ -738,7 +757,7 @@ function refreshModelUi() {
   sel.disabled = q.opts.length === 1;
   $("qualLabel").textContent = q.label;
   $("qualNote").textContent = q.note;
-  $("ratioNote").textContent = ratioNote(prov, $("ratio").value);
+  $("ratioNote").textContent = ratioNote(prov, $("ratio").value, sel.value);
   if ($("draftNote")) refreshDraftNote();
   const costText = meta ? meta.cost : "";
   $("cost").textContent = `예상 비용(대략, 1장 기준): ${costText}. 가격은 변동될 수 있으니 각 사 요금표를 확인하세요. 참조 이미지를 넣으면 입력 비용이 조금 더 붙습니다.`;
@@ -764,11 +783,12 @@ function draftPick(prov, mm) {
   return { model: mm, quality: $("quality").value };
 }
 
-function hqQuality(prov) { return prov === "gemini" ? "2K" : prov === "openai" ? "high" : "auto"; }
+function hqQuality(prov) { return prov === "gemini" || prov === "qwen" ? "2K" : prov === "openai" ? "high" : "auto"; }
 
 function unitUsd(modelId, quality) {
   const m = MODELS.find((x) => x.id === modelId);
   if (!m || m.usd == null) return null;
+  if (quality === "4K" && m.usd4k) return m.usd4k;
   return quality === "2K" && m.usd2k ? m.usd2k : m.usd;
 }
 
@@ -788,7 +808,7 @@ async function buildRequest(o) {
     if (!src.cut) src.cut = await makeCutout(src.blob);
     if (src.cut.ok) {
       // 판에 이미 제품이 들어 있으므로 제품 원본은 따로 보내지 않아 입력 토큰을 아낍니다.
-      const plate = makePlate(src.cut, outputAspect(o.prov, o.ratio));
+      const plate = makePlate(src.cut, outputAspect(o.prov, o.ratio, o.quality));
       head = [Object.assign(plate.ref, { role: "plate" })];
       lock = { cut: src.cut, rect: plate.rect };
     } else lockNote = src.cut.reason;
@@ -921,7 +941,7 @@ async function onGenerate(opts = {}) {
     const jobs = [];
     for (const ratio of ratios) {
       for (let k = 1; k <= n; k++) {
-        const req = await buildRequest({ prov, ratio, userPrompt, page, variation: { k, n } });
+        const req = await buildRequest({ prov, ratio, quality: pick.quality, userPrompt, page, variation: { k, n } });
         const tag = [n > 1 ? `시안 ${k}/${n}` : "", ratios.length > 1 ? ratio : ""].filter(Boolean).join(" · ");
         jobs.push({ model: pick.model, quality: pick.quality, ratio, userPrompt, page, req, draft: n > 1, tag });
       }
@@ -953,7 +973,7 @@ async function upgradeEntry(e) {
   const draftRef = { mime: src.mime, b64: src.b64, dataUrl: `data:${src.mime};base64,${src.b64}`, role: "draft" };
   state.busy = true; $("btnGen").disabled = true;
   try {
-    const req = await buildRequest({ prov, ratio: e.ratio, userPrompt: e.job.userPrompt, page: e.job.page, extra: [draftRef] });
+    const req = await buildRequest({ prov, ratio: e.ratio, quality: hqQuality(prov), userPrompt: e.job.userPrompt, page: e.job.page, extra: [draftRef] });
     const job = { model: mm, quality: hqQuality(prov), ratio: e.ratio, userPrompt: e.job.userPrompt, page: e.job.page, req, draft: false, tag: "고화질" + (e.tag ? ` (${e.tag})` : "") };
     if ($("previewFirst").checked && !(await showPreview([job]))) { setStatus("생성을 취소했습니다."); return; }
     setStatus(`${mm.label || mm.id} · ${job.quality}로 고화질 생성 중... (10~90초)`);
@@ -1408,6 +1428,24 @@ async function callAssist(key, model, system, user, refs) {
   return text;
 }
 
+// Claude(Anthropic) 텍스트 호출. 확장에서 직접 부르므로 브라우저 직접 호출 헤더가 필요합니다.
+async function callClaude(key, model, system, user, refs) {
+  const content = refs.map((r) => ({ type: "image", source: { type: "base64", media_type: r.mime, data: r.b64 } }));
+  content.push({ type: "text", text: user });
+  const sonnet = model.startsWith("claude-sonnet");
+  const headers = { "Content-Type": "application/json", "x-api-key": key, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true" };
+  const body = { model, max_tokens: 16000, system, messages: [{ role: "user", content }], output_config: { effort: sonnet ? "medium" : "low" } };
+  // Sonnet 5.5가 안전 필터로 거절하면 서버가 다른 모델로 자동 재시도합니다.
+  if (sonnet) { headers["anthropic-beta"] = "server-side-fallback-2026-07-01"; body.fallbacks = "default"; }
+  const res = await fetch("https://api.anthropic.com/v1/messages", { method: "POST", headers, body: JSON.stringify(body) });
+  if (!res.ok) throw await httpError(res, "Claude(프롬프트 도우미)");
+  const j = await res.json();
+  if (j.stop_reason === "refusal") throw safetyError("Claude");
+  const text = (j.content || []).filter((b) => b.type === "text").map((b) => b.text).join("");
+  if (!text) throw new Error(j.stop_reason === "max_tokens" ? "Claude 응답이 길이 제한에서 잘렸습니다. 다시 시도해 주세요." : "프롬프트 도우미가 빈 응답을 돌려주었습니다.");
+  return text;
+}
+
 function normalizeAssist(r) {
   const s = (v) => (typeof v === "string" ? v : "");
   const pr = (o) => ({ title_ko: s(o && o.title_ko), prompt_ko: s(o && o.prompt_ko), prompt_en: s(o && o.prompt_en) });
@@ -1483,8 +1521,10 @@ function startAutoGenerate() {
 
 async function runAssist(auto) {
   if (assistBusy) return;
-  const key = state.keys.gemini;
-  if (!key) { $("assistStatus").textContent = "프롬프트 도우미는 Gemini API 키가 필요합니다. ⚙ API 키 설정에서 입력하세요."; $("assistStatus").className = "status err"; if (!auto) $("dlg").showModal(); return; }
+  const engine = $("assistEngine").value;
+  const claude = engine.startsWith("claude");
+  const key = claude ? state.keys.claude : state.keys.gemini;
+  if (!key) { $("assistStatus").textContent = `프롬프트 도우미(${claude ? "Claude" : "Gemini"})는 ${claude ? "Claude" : "Gemini"} API 키가 필요합니다. ⚙ API 키 설정에서 입력하세요.`; $("assistStatus").className = "status err"; if (!auto) $("dlg").showModal(); return; }
   const kw = $("kw").value.trim();
   if (!kw && !analysisRefs().length && !$("url").value.trim()) { $("assistStatus").textContent = "단어를 입력하거나 이미지를 올려 주세요."; $("assistStatus").className = "status err"; return; }
   cancelCountdown();
@@ -1494,14 +1534,15 @@ async function runAssist(auto) {
     let page = null;
     if ($("url").value.trim()) { try { page = await ensureUrlLoaded(); } catch (e) { /* URL 실패는 무시 */ } }
     const preset = PRESETS.find((p) => p.id === state.preset) || PRESETS[0];
-    const raw = await callAssist(key, state.assistModel || "gemini-2.5-flash", buildAssistSystem(),
+    const call = claude ? (k, s, u, refs) => callClaude(k, engine, s, u, refs) : (k, s, u, refs) => callAssist(k, state.assistModel || "gemini-2.5-flash", s, u, refs);
+    const raw = await call(key, buildAssistSystem(),
       buildAssistUser({ keywords: kw, preset, copy: $("copyText").value.trim(), page, imageCount: analysisRefs().length, roles: analysisRefs().map((r) => roleOf(r).en) }), analysisRefs());
     const r = normalizeAssist(parseJsonLoose(raw));
     if (!r.main.prompt_en) throw new Error("프롬프트가 비어 있습니다. 다시 시도해 주세요.");
     if (!r.ratio) r.ratio = preset.ratio;
     state.assist = r; renderAssist(r);
     usePrompt(r.main, r.ratio);
-    $("assistStatus").textContent = "완료! 메인 프롬프트를 입력칸에 넣었고, 아래에서 변형을 골라 쓸 수도 있어요."; $("assistStatus").className = "status ok";
+    $("assistStatus").textContent = `완료! (${$("assistEngine").selectedOptions[0].textContent.split(" (")[0]}) 메인 프롬프트를 입력칸에 넣었고, 아래에서 변형을 골라 쓸 수도 있어요.`; $("assistStatus").className = "status ok";
     if ($("autoGen").checked) startAutoGenerate();
   } catch (e) {
     $("assistStatus").textContent = e.message || String(e); $("assistStatus").className = "status err";
@@ -1908,10 +1949,12 @@ async function init() {
   if (ap.preset && PRESETS.some((p) => p.id === ap.preset)) state.preset = ap.preset;
   if (ap.kw) $("kw").value = ap.kw;
   $("autoAnalyze").checked = !!ap.autoAnalyze;
+  if (ap.engine && [...$("assistEngine").options].some((o) => o.value === ap.engine)) $("assistEngine").value = ap.engine;
   renderPresets();
   renderRoleBar();
-  const saveAssistPrefs = () => store.set({ assistPrefs: { preset: state.preset, kw: $("kw").value, autoAnalyze: $("autoAnalyze").checked } });
+  const saveAssistPrefs = () => store.set({ assistPrefs: { preset: state.preset, kw: $("kw").value, autoAnalyze: $("autoAnalyze").checked, engine: $("assistEngine").value } });
   $("presets").addEventListener("click", saveAssistPrefs);
+  $("assistEngine").addEventListener("change", saveAssistPrefs);
   $("kw").addEventListener("change", saveAssistPrefs);
   $("autoAnalyze").addEventListener("change", saveAssistPrefs);
   $("btnAssist").addEventListener("click", () => runAssist(false));
@@ -1933,17 +1976,18 @@ async function init() {
   $("mSearch").addEventListener("input", () => { state.search = $("mSearch").value; renderPicker(); });
   $("btnDiscover").addEventListener("click", discoverModels);
   $("customProvider").addEventListener("change", refreshModelUi);
+  $("customModel").addEventListener("change", refreshModelUi);
   $("ratio").addEventListener("change", refreshModelUi);
   $("prompt").addEventListener("input", () => ($("count").textContent = $("prompt").value.length));
 
   $("btnSettings").addEventListener("click", () => {
-    $("kGemini").value = state.keys.gemini || ""; $("kQwen").value = state.keys.qwen || ""; $("kOpenAI").value = state.keys.openai || ""; $("kEachlabs").value = state.keys.eachlabs || ""; $("qwenBase").value = state.qwenBase || "";
+    $("kGemini").value = state.keys.gemini || ""; $("kQwen").value = state.keys.qwen || ""; $("kOpenAI").value = state.keys.openai || ""; $("kEachlabs").value = state.keys.eachlabs || ""; $("kClaude").value = state.keys.claude || ""; $("qwenBase").value = state.qwenBase || "";
     $("assistModel").value = state.assistModel || ""; $("proofModel").value = state.proofModel || "";
     $("dlg").showModal();
   });
   $("settingsForm").addEventListener("submit", async (ev) => {
     if ((ev.submitter ? ev.submitter.value : "cancel") !== "save") return;
-    state.keys = { gemini: $("kGemini").value.trim(), qwen: $("kQwen").value.trim(), openai: $("kOpenAI").value.trim(), eachlabs: $("kEachlabs").value.trim() };
+    state.keys = { gemini: $("kGemini").value.trim(), qwen: $("kQwen").value.trim(), openai: $("kOpenAI").value.trim(), eachlabs: $("kEachlabs").value.trim(), claude: $("kClaude").value.trim() };
     state.qwenBase = $("qwenBase").value.trim() || DEFAULT_QWEN_BASE;
     state.assistModel = $("assistModel").value.trim() || "gemini-2.5-flash";
     state.proofModel = $("proofModel").value.trim() || "gemini-3.1-pro-preview";

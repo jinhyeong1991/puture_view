@@ -83,6 +83,13 @@
         <div id="presets" class="presets" role="radiogroup" aria-label="형식 선택"></div>
         <small id="presetNote"></small>
       </div>
+      <label class="field"><span>AI 엔진</span>
+        <select id="assistEngine">
+          <option value="gemini">Gemini (⚙ 설정의 도우미 모델)</option>
+          <option value="claude-haiku-5-5">Claude Haiku 5.5 (기본 · 1회 1~2원)</option>
+          <option value="claude-sonnet-5-5">Claude Sonnet 5.5 (고급 · 1회 25원 안팎)</option>
+        </select>
+      </label>
       <label class="field"><span>이미지에 넣을 문구 (선택)</span>
         <input id="copyText" type="text" placeholder="예) 맑고 시원한 하루 / 비우면 문구 없이 이미지만">
       </label>
@@ -200,6 +207,8 @@
     <label class="field"><span>QwenCloud(DashScope) API 키</span><input id="kQwen" type="password" autocomplete="off" placeholder="sk-..."></label>
     <label class="field"><span>Qwen API 주소 (고급)</span><input id="qwenBase" type="text" placeholder="https://ap-southeast-1.maas.qwencloudapi.com"></label>
     <label class="field"><span>OpenAI API 키</span><input id="kOpenAI" type="password" autocomplete="off" placeholder="sk-proj-..."></label>
+    <label class="field"><span>Claude(Anthropic) API 키 (✨ 프롬프트 도우미용)</span><input id="kClaude" type="password" autocomplete="off" placeholder="sk-ant-...">
+      <small>프롬프트 도우미의 "AI 엔진"에서 Claude를 고를 때만 사용합니다. console.anthropic.com → API Keys</small></label>
     <label class="field"><span>eachlabs API 키 (🎬 동영상용)</span><input id="kEachlabs" type="password" autocomplete="off" placeholder="eachlabs.ai → API Keys">
       <small>결과 카드의 🎬 동영상(MiniMax H3 Max)에 사용합니다. eachlabs.ai에서 가입 후 API Keys에서 만들고, 잔액을 충전해야 동작합니다.</small></label>
     <label class="field"><span>프롬프트 도우미·해설 모델 (Gemini 텍스트 모델)</span><input id="assistModel" type="text" placeholder="gemini-2.5-flash">
