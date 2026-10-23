@@ -497,8 +497,13 @@ async function makeCutout(blob) {
   if ([rowIdx(0), rowIdx(h - 1), colIdx(0), colIdx(w - 1)].some((e) => bgShare(e) < 0.85))
     return { ok: false, reason: "사진 가장자리에서 잘린 피사체(인물 사진 등)라 원본 합성은 건너뛰었습니다. 인물은 🎨 칸에 '참고(인물)'로 넣으세요." };
 
+  // 지울 배경 판정: 투명 배경 PNG면 투명한 곳만 지웁니다 (흰색·연회색 제품 면이 투명 배경에 닿아 있어도 남도록).
+  // 흰 배경이면 거의 순백(250 이상)만 지워, 밝은 회색(240대) 제품 면이 배경과 함께 지워지지 않게 합니다.
+  const transparentBg = nClear / border.length >= 0.6;
+  const pureWhite = (i) => { const r = d[i * 4], g = d[i * 4 + 1], b = d[i * 4 + 2]; const mn = Math.min(r, g, b); return mn >= 250 && Math.max(r, g, b) - mn <= 6; };
+  const isBg = transparentBg ? clear : (i) => clear(i) || pureWhite(i);
   const bg = new Uint8Array(n); const stack = new Int32Array(n); let sp = 0;
-  const visit = (i) => { if (!bg[i] && (clear(i) || white(i))) { bg[i] = 1; stack[sp++] = i; } };
+  const visit = (i) => { if (!bg[i] && isBg(i)) { bg[i] = 1; stack[sp++] = i; } };
   border.forEach(visit);
   while (sp) {
     const i = stack[--sp]; const x = i % w;
@@ -509,8 +514,8 @@ async function makeCutout(blob) {
     if (bg[i]) { d[i * 4 + 3] = 0; continue; }
     fg++;
     const x = i % w, y = (i - x) / w;
-    // 가장자리 1px은 밝을수록 살짝 투명하게 (흰 테두리 잔상 방지)
-    if ((x > 0 && bg[i - 1]) || (x < w - 1 && bg[i + 1]) || (i >= w && bg[i - w]) || (i < n - w && bg[i + w])) {
+    // 가장자리 1px은 밝을수록 살짝 투명하게 (흰 테두리 잔상 방지). 투명 배경 PNG는 원래 가장자리를 그대로 씁니다.
+    if (!transparentBg && ((x > 0 && bg[i - 1]) || (x < w - 1 && bg[i + 1]) || (i >= w && bg[i - w]) || (i < n - w && bg[i + w]))) {
       const mn = Math.min(d[i * 4], d[i * 4 + 1], d[i * 4 + 2]);
       d[i * 4 + 3] = Math.round(d[i * 4 + 3] * Math.max(0.35, Math.min(1, (255 - mn) / 40)));
     }
@@ -529,7 +534,7 @@ async function makeCutout(blob) {
 /* 비율에 따라 제품 자리를 정합니다 (0~1 비율 좌표). 세로·정사각은 가운데 아래, 가로는 오른쪽. */
 function productSlot(aspect, cw, ch) {
   const ar = cw / ch;
-  const s = aspect >= 1.25 ? { cx: 0.7, maxW: 0.42, maxH: 0.78, bottom: 0.9 }
+  const s = aspect >= 1.25 ? { cx: 0.7, maxW: 0.42, maxH: 0.74, bottom: 0.85 }
     : aspect >= 0.85 ? { cx: 0.5, maxW: 0.55, maxH: 0.6, bottom: 0.92 }
     : { cx: 0.5, maxW: 0.62, maxH: 0.56, bottom: 0.93 };
   // 슬롯 높이 h(캔버스 높이 대비)일 때 폭 = h * ar / aspect (캔버스 폭 대비)
