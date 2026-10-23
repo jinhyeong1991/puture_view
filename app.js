@@ -41,21 +41,29 @@ const PROVIDER_LABEL = { gemini: "Gemini", qwen: "QwenCloud", openai: "OpenAI" }
 /* 직접 생성에 성공해 본 모델 (나머지는 목록에서만 확인한 모델) */
 const VERIFIED = new Set(["gemini-3.1-flash-image", "gemini-3-pro-image", "qwen-image-3.0", "qwen-image-3.0-pro", "gpt-image-2.5-sunburst"]);
 
-const RATIOS = ["1:1", "3:4", "4:5", "9:16", "4:3", "16:9"];
+const RATIOS = ["1:1", "3:4", "4:5", "9:16", "4:3", "16:9", "21:9"];
 
-/* 비율 -> 제공자별 크기 매핑 */
-const QWEN_SIZES = { "1:1": "1328*1328", "3:4": "1104*1472", "4:5": "1104*1472", "9:16": "928*1664", "4:3": "1472*1104", "16:9": "1664*928" };
+/* 비율 -> 제공자별 크기 매핑.
+   21:9(PC 배너): Gemini는 그대로 만들고, Qwen·OpenAI는 21:9 크기가 없어 가장 넓은 크기로 만든 뒤 위아래를 잘라 21:9로 맞춥니다 (cropToRatio). */
+const QWEN_SIZES = { "1:1": "1328*1328", "3:4": "1104*1472", "4:5": "1104*1472", "9:16": "928*1664", "4:3": "1472*1104", "16:9": "1664*928", "21:9": "1664*928" };
 /* Qwen 2K(최고): 긴 변 2048 */
-const QWEN_2K_SIZES = { "1:1": "2048*2048", "3:4": "1536*2048", "4:5": "1536*2048", "9:16": "1152*2048", "4:3": "2048*1536", "16:9": "2048*1152" };
+const QWEN_2K_SIZES = { "1:1": "2048*2048", "3:4": "1536*2048", "4:5": "1536*2048", "9:16": "1152*2048", "4:3": "2048*1536", "16:9": "2048*1152", "21:9": "2048*1152" };
 function qwenSize(ratio, quality) { return (quality === "2K" ? QWEN_2K_SIZES : QWEN_SIZES)[ratio] || QWEN_SIZES["1:1"]; }
-const OPENAI_SIZES = { "1:1": "1024x1024", "3:4": "1024x1536", "4:5": "1024x1536", "9:16": "1024x1536", "4:3": "1536x1024", "16:9": "1536x1024" };
+const OPENAI_SIZES = { "1:1": "1024x1024", "3:4": "1024x1536", "4:5": "1024x1536", "9:16": "1024x1536", "4:3": "1536x1024", "16:9": "1536x1024", "21:9": "1536x1024" };
 /* GPT Image 2.5 4K: 변은 16의 배수, 긴 변 3840 이하, 전체 8,294,400픽셀 이하 */
 const OPENAI_4K = new Set(["gpt-image-2.5-sunburst", "gpt-image-2.5-flare"]);
-const OPENAI_4K_SIZES = { "1:1": "2880x2880", "3:4": "2480x3312", "4:5": "2576x3216", "9:16": "2160x3840", "4:3": "3312x2480", "16:9": "3840x2160" };
+const OPENAI_4K_SIZES = { "1:1": "2880x2880", "3:4": "2480x3312", "4:5": "2576x3216", "9:16": "2160x3840", "4:3": "3312x2480", "16:9": "3840x2160", "21:9": "3840x2160" };
 function openaiSize(ratio, quality) { return (quality === "4K" ? OPENAI_4K_SIZES[ratio] : OPENAI_SIZES[ratio]) || "1024x1024"; }
+
+/* 결과를 잘라서 맞춰야 하는 비율 (지금은 21:9만): 제공자가 다른 비율로 돌려주면 가운데 띠만 남깁니다 */
+const CROP_RATIOS = new Set(["21:9"]);
+function ratioValue(ratio) { const [a, b] = String(ratio).split(":").map(Number); return a > 0 && b > 0 ? a / b : 1; }
 
 function ratioNote(provider, ratio, quality) {
   if (provider === "gemini") return "";
+  if (ratio === "21:9") return provider === "openai" && quality !== "4K"
+    ? "OpenAI는 21:9가 없어 가로 3:2로 만든 뒤 위아래를 잘라 21:9로 맞춥니다."
+    : (provider === "openai" ? "OpenAI는" : "Qwen은") + " 21:9가 없어 16:9로 만든 뒤 위아래를 잘라 21:9로 맞춥니다.";
   if (provider === "qwen") return ratio === "4:5" ? "Qwen은 4:5가 없어 3:4로 생성됩니다." : "";
   if (provider === "openai") {
     if (ratio === "1:1" || quality === "4K") return "";
@@ -530,13 +538,31 @@ function productSlot(aspect, cw, ch) {
   return { x: s.cx - wv / 2, y: s.bottom - h, w: wv, h };
 }
 
-function makePlate(cut, aspect) {
+/* 생성 후 가운데 띠만 남길 때(band = 남는 세로 비율 0~1): 최종 비율 기준 제품 자리를 그 띠 안으로 옮깁니다 */
+function slotInBand(rect, band) {
+  const top = (1 - band) / 2;
+  return { x: rect.x, y: top + rect.y * band, w: rect.w, h: rect.h * band };
+}
+
+/* 가운데를 기준으로 잘라 비율(가로/세로)을 맞춥니다. 이미 그 비율이면 그대로 돌려줍니다. */
+async function cropToRatio(img, aspect) {
+  const bmp = await createImageBitmap(b64ToBlob(img.b64, img.mime));
+  let w = bmp.width, h = Math.round(bmp.width / aspect);
+  if (h > bmp.height) { h = bmp.height; w = Math.round(bmp.height * aspect); }
+  if (Math.abs(w - bmp.width) < 2 && Math.abs(h - bmp.height) < 2) return img;
+  const c = document.createElement("canvas"); c.width = w; c.height = h;
+  c.getContext("2d").drawImage(bmp, (bmp.width - w) / 2, (bmp.height - h) / 2, w, h, 0, 0, w, h);
+  const dataUrl = c.toDataURL("image/png");
+  return { mime: "image/png", b64: dataUrl.split(",")[1] };
+}
+
+function makePlate(cut, aspect, slot) {
   const PW = aspect >= 1 ? 1024 : Math.round(1024 * aspect), PH = aspect >= 1 ? Math.round(1024 / aspect) : 1024;
   const c = document.createElement("canvas"); c.width = PW; c.height = PH;
   const ctx = c.getContext("2d");
   const g = ctx.createLinearGradient(0, 0, 0, PH); g.addColorStop(0, "#dcdee3"); g.addColorStop(1, "#c8cbd2");
   ctx.fillStyle = g; ctx.fillRect(0, 0, PW, PH);
-  const rect = productSlot(aspect, cut.w, cut.h);
+  const rect = slot || productSlot(aspect, cut.w, cut.h);
   ctx.imageSmoothingQuality = "high";
   ctx.drawImage(cut.canvas, rect.x * PW, rect.y * PH, rect.w * PW, rect.h * PH);
   const dataUrl = c.toDataURL("image/jpeg", 0.92);
@@ -804,11 +830,15 @@ async function buildRequest(o) {
   const src = productSource();
   const srcRef = src ? Object.assign({}, src.ref || src, { role: "product" }) : null;
   let lock = null; let lockNote = ""; let head = srcRef ? [srcRef] : [];
+  // 21:9처럼 제공자가 그 비율을 못 만들면 넓게 만든 뒤 가운데 띠(band)만 남깁니다
+  const outAsp = outputAspect(o.prov, o.ratio, o.quality), wantAsp = ratioValue(o.ratio);
+  const band = CROP_RATIOS.has(o.ratio) && wantAsp > outAsp * 1.02 ? outAsp / wantAsp : 1;
   if (src && $("lockProduct").checked) {
     if (!src.cut) src.cut = await makeCutout(src.blob);
     if (src.cut.ok) {
       // 판에 이미 제품이 들어 있으므로 제품 원본은 따로 보내지 않아 입력 토큰을 아낍니다.
-      const plate = makePlate(src.cut, outputAspect(o.prov, o.ratio, o.quality));
+      const slot = band < 1 ? slotInBand(productSlot(wantAsp, src.cut.w, src.cut.h), band) : null;   /* 잘린 뒤에도 제품이 최종 비율의 제자리에 오도록 */
+      const plate = makePlate(src.cut, outAsp, slot);
       head = [Object.assign(plate.ref, { role: "plate" })];
       lock = { cut: src.cut, rect: plate.rect };
     } else lockNote = src.cut.reason;
@@ -818,7 +848,11 @@ async function buildRequest(o) {
   const refs = head.concat(free, extra);
   let prompt = withRefGuide(composePrompt(o.userPrompt, o.page, $("urlMode").value), refs, $("harmonize").checked) + (lock ? "\n" + LOCK_PROMPT : "");
   if (o.variation && o.variation.n > 1) prompt += `\n\n[Variation ${o.variation.k} of ${o.variation.n}] Explore a clearly different composition, camera angle and color mood from the other variations while keeping every rule above.`;
-  return { refs, prompt, lock, lockNote, reviewRefs: (srcRef ? [srcRef] : []).concat(state.refs).slice(0, 2) };
+  if (band < 1) {
+    const cut = Math.round((1 - band) / 2 * 100);
+    prompt += `\n\n[Crop] The final image will be cropped to an ultra-wide ${o.ratio} banner: about ${cut}% will be cut from the top and ${cut}% from the bottom. Keep every important element, including the whole product, inside the middle ${Math.round(band * 100)}% of the height; fill the top and bottom with plain continuation of the background only.`;
+  }
+  return { refs, prompt, lock, lockNote, crop: band < 1 ? wantAsp : 0, reviewRefs: (srcRef ? [srcRef] : []).concat(state.refs).slice(0, 2) };
 }
 
 async function runJob(job) {
@@ -838,6 +872,12 @@ async function runJob(job) {
       entry.raw = { mime: img.mime, b64: img.b64 };
       img = await compositeProduct(img, req.lock.cut, req.lock.rect);
       entry.comp = { mime: img.mime, b64: img.b64 };
+    }
+    // 21:9 등: 제공자가 넓게 만든 결과를 가운데만 남겨 최종 비율로 (합성본·원본 둘 다)
+    if (req.crop) {
+      if (entry.raw) entry.raw = await cropToRatio(entry.raw, req.crop);
+      img = await cropToRatio(img, req.crop);
+      if (entry.comp) entry.comp = { mime: img.mime, b64: img.b64 };
     }
     entry.ms = Date.now() - t0; entry.mime = img.mime; entry.b64 = img.b64; entry.dataUrl = `data:${img.mime};base64,${img.b64}`;
     entry.refs = req.reviewRefs;
@@ -1365,7 +1405,7 @@ const PRESETS = [
     directive: "A wide website hero banner: subject placed on one side, large clean empty area on the other side reserved for copy, balanced brand colors, crisp and modern." },
 ];
 
-const ASSIST_RATIOS = ["1:1", "3:4", "4:5", "9:16", "4:3", "16:9"];
+const ASSIST_RATIOS = ["1:1", "3:4", "4:5", "9:16", "4:3", "16:9", "21:9"];
 
 function buildAssistSystem() {
   return [
