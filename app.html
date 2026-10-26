@@ -200,7 +200,7 @@
       <h3 id="h-up">🔍 업스케일 (고화질 확대)</h3>
       <div id="upMode" class="rolebar" role="radiogroup" aria-label="업스케일 방식">
         <button type="button" class="rchip on" data-m="local" role="radio" aria-checked="true">원본 그대로 (무료)</button>
-        <button type="button" class="rchip" data-m="ai" role="radio" aria-checked="false">✨ AI 고화질 (Gemini 4K)</button>
+        <button type="button" class="rchip" data-m="ai" role="radio" aria-checked="false">✨ AI 고화질 (Gemini)</button>
       </div>
       <div id="dropUp" class="drop" tabindex="0" role="button" aria-label="업스케일할 이미지 선택 또는 끌어다 놓기">
         확대할 이미지를 끌어다 놓거나 클릭해서 선택
@@ -211,6 +211,10 @@
         <div id="upScale" class="rolebar" role="radiogroup" aria-label="확대 배율">
           <button type="button" class="rchip on" data-s="2" role="radio" aria-checked="true">2배</button>
           <button type="button" class="rchip" data-s="3" role="radio" aria-checked="false">3배</button>
+        </div>
+        <div id="upSize" class="rolebar" role="radiogroup" aria-label="AI 고화질 해상도" hidden>
+          <button type="button" class="rchip on" data-z="2K" role="radio" aria-checked="true">2K (약 180원)</button>
+          <button type="button" class="rchip" data-z="4K" role="radio" aria-checked="false">4K (약 340원)</button>
         </div>
         <button id="btnUpscale" type="button" class="primary alt upgo" disabled>업스케일</button>
       </div>

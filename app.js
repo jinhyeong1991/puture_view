@@ -724,7 +724,7 @@ async function copyText(text, btn) {
 }
 
 /* ---------- 🔍 업스케일 (Lanczos3 · upscale.js 워커) ---------- */
-const up = { blob: null, url: "", scale: 2, mode: "local", sharpen: true, busy: false };
+const up = { blob: null, url: "", scale: 2, mode: "local", size: "2K", sharpen: true, busy: false };
 const GEMINI_UPSCALE_MODEL = "gemini-3-pro-image";
 const GEMINI_UPSCALE_PROMPT = [
   "Upscale this exact image to a higher resolution. This is a faithful restoration task, not a new design.",
@@ -748,10 +748,10 @@ async function runUpscaleWorker(blob, scale, onProgress, sharpen) {
   });
 }
 
-/* ✨ AI 고화질 · Gemini 4K: 원본을 참조로 보내 4K로 다시 그림. 원본 비율에 가장 가까운 비율로 만든 뒤 원본 비율로 잘라 PNG로 */
-async function runGeminiUpscale(blob, onProgress) {
+/* ✨ AI 고화질 · Gemini 2K/4K: 원본을 참조로 보내 다시 그림. 원본 비율에 가장 가까운 비율로 만든 뒤 원본 비율로 잘라 PNG로 */
+async function runGeminiUpscale(blob, size, onProgress) {
   const key = state.keys.gemini;
-  if (!key) throw new Error("Gemini 4K 업스케일은 Gemini API 키가 필요합니다. ⚙ API 키 설정에서 입력하세요.");
+  if (!key) throw new Error(`Gemini ${size} 업스케일은 Gemini API 키가 필요합니다. ⚙ API 키 설정에서 입력하세요.`);
   const bm = await createImageBitmap(blob); const w = bm.width, h = bm.height, aspect = w / h;
   const ratio = RATIOS.reduce((a, b) => (Math.abs(Math.log(ratioValue(b) / aspect)) < Math.abs(Math.log(ratioValue(a) / aspect)) ? b : a));
   // 원본은 손실 없이 PNG로 (너무 크면 긴 변 3072px로 줄여서)
@@ -763,30 +763,30 @@ async function runGeminiUpscale(blob, onProgress) {
     ref = { mime: "image/png", b64: await blobToB64(await c.convertToBlob({ type: "image/png" })) };
   }
   bm.close();
-  onProgress(`Gemini 4K로 다시 그리는 중... (비율 ${ratio}, 보통 30초~1분)`);
-  const img = await genGemini(key, GEMINI_UPSCALE_MODEL, GEMINI_UPSCALE_PROMPT, [ref], ratio, "4K");
+  onProgress(`Gemini ${size}로 다시 그리는 중... (비율 ${ratio}, 보통 30초~1분)`);
+  const img = await genGemini(key, GEMINI_UPSCALE_MODEL, GEMINI_UPSCALE_PROMPT, [ref], ratio, size);
   onProgress("원본 비율로 맞추는 중...");
   const cut = await cropToRatio(img, aspect);
   const out = b64ToBlob(cut.b64, cut.mime); const ob = await createImageBitmap(out);
   let png = out;
   if (cut.mime !== "image/png") { const c = new OffscreenCanvas(ob.width, ob.height); c.getContext("2d").drawImage(ob, 0, 0); png = await c.convertToBlob({ type: "image/png" }); }
-  const r = { blob: png, w, h, outW: ob.width, outH: ob.height, ratio, usd: unitUsd(GEMINI_UPSCALE_MODEL, "4K") }; ob.close();
+  const r = { blob: png, w, h, outW: ob.width, outH: ob.height, ratio, usd: unitUsd(GEMINI_UPSCALE_MODEL, size) }; ob.close();
   return r;
 }
 
 async function upscaleAndShow(blob, scale, label) {
   if (up.busy) { upSay("이미 업스케일 중입니다. 끝난 뒤 다시 눌러 주세요.", "err"); return; }
   up.busy = true; $("btnUpscale").disabled = true;
-  const t0 = Date.now(), gem = up.mode === "ai";
-  upSay(gem ? "Gemini 4K 업스케일 준비 중..." : `${scale}배 업스케일 중...`);
+  const t0 = Date.now(), gem = up.mode === "ai", size = up.size;
+  upSay(gem ? `Gemini ${size} 업스케일 준비 중...` : `${scale}배 업스케일 중...`);
   try {
-    const r = gem ? await runGeminiUpscale(blob, (msg) => upSay(msg))
+    const r = gem ? await runGeminiUpscale(blob, size, (msg) => upSay(msg))
       : await runUpscaleWorker(blob, scale, (p) => upSay(p.encoding ? "PNG로 저장하는 중..." : p.sharpening ? "선명하게 다듬는 중..." : `${scale}배 업스케일 중... ${Math.round(p.progress * 100)}%`), up.sharpen);
     const mime = r.blob.type || "image/png";
     const times = (r.outW / r.w).toFixed(1).replace(/\.0$/, "");
-    const tag = gem ? `✨ Gemini 4K · 약 ${times}배 (4K 기준, 정확히 ${scale}배 아님) · 다시 그린 이미지${r.usd ? ` · 약 $${r.usd}` : ""}`
+    const tag = gem ? `✨ Gemini ${size} · 약 ${times}배 (${size} 기준, 정확히 ${scale}배 아님) · 다시 그린 이미지${r.usd ? ` · 약 $${r.usd}` : ""}`
       : `${scale}배 · 원본 그대로${up.sharpen ? " + 선명하게" : ""} · PNG 무손실`;
-    const entry = { upscaled: true, label, model: gem ? "upscale_gemini4k" : `upscale_x${scale}`, ratio: `${r.w}×${r.h} → ${r.outW}×${r.outH}`, prompt: "", mime,
+    const entry = { upscaled: true, label, model: gem ? `upscale_gemini${size.toLowerCase()}` : `upscale_x${scale}`, ratio: `${r.w}×${r.h} → ${r.outW}×${r.outH}`, prompt: "", mime,
       dataUrl: URL.createObjectURL(r.blob), srcUrl: URL.createObjectURL(blob), time: Date.now(), ms: Date.now() - t0, tag };
     entry.upUrl = entry.dataUrl;
     state.history.unshift(entry); renderGallery();
@@ -810,13 +810,13 @@ async function setUpBlob(blob) {
 const UP_NOTES = {
   local: "원본 픽셀만으로 확대(Lanczos3)해서 모양·글자·색이 바뀌지 않습니다. 무료·PNG 무손실. 원본이 흐리거나 깨져 있으면 그대로 커지니 그럴 땐 ✨ AI 고화질을 쓰세요.",
   get ai() { // USD_KRW·unitUsd가 아래에 정의돼 있어 열 때 계산
-    const usd = unitUsd(GEMINI_UPSCALE_MODEL, "4K");
-    return `⚠ Gemini 3 Pro Image가 원본을 보고 4K로 다시 그리는 방식이라 글자·로고·얼굴·제품 모양이 원본과 달라질 수 있어요. 결과는 4K 기준 크기(정확히 2배·3배 아님)이고, 1회 약 $${usd} (≈ ${(Math.round((usd * USD_KRW) / 10) * 10).toLocaleString()}원)입니다(Gemini 키 필요). 원본 보기로 꼭 비교하세요.`;
+    const usd = unitUsd(GEMINI_UPSCALE_MODEL, up.size);
+    return `⚠ Gemini 3 Pro Image가 원본을 보고 ${up.size}로 다시 그리는 방식이라 글자·로고·얼굴·제품 모양이 원본과 달라질 수 있어요. 결과는 ${up.size} 기준 크기(긴 변 약 ${up.size === "4K" ? "4000" : "2000"}px, 정확히 2배·3배 아님)이고, 1회 약 $${usd} (≈ ${(Math.round((usd * USD_KRW) / 10) * 10).toLocaleString()}원)입니다(Gemini 키 필요). 원본 보기로 꼭 비교하세요.`;
   },
 };
 function upInfoText() {
   const gem = up.mode === "ai";
-  return `${up.blob.name || "이미지"} · ${up.w}×${up.h} → ${gem ? "4K 기준 (원본 비율로 자름)" : `${up.w * up.scale}×${up.h * up.scale}`}`;
+  return `${up.blob.name || "이미지"} · ${up.w}×${up.h} → ${gem ? `${up.size} 기준 (원본 비율로 자름)` : `${up.w * up.scale}×${up.h * up.scale}`}`;
 }
 function renderUpScale() {
   document.querySelectorAll("#upScale .rchip").forEach((b) => { const on = Number(b.dataset.s) === up.scale; b.classList.toggle("on", on); b.setAttribute("aria-checked", on); });
@@ -824,7 +824,8 @@ function renderUpScale() {
   const gem = up.mode === "ai";
   $("upSharpRow").hidden = gem; $("upSharp").checked = up.sharpen;
   $("upNote").textContent = UP_NOTES[up.mode]; $("upNote").classList.toggle("warn", gem);
-  $("upScale").hidden = gem;
+  document.querySelectorAll("#upSize .rchip").forEach((b) => { const on = b.dataset.z === up.size; b.classList.toggle("on", on); b.setAttribute("aria-checked", on); });
+  $("upScale").hidden = gem; $("upSize").hidden = !gem;
   if (up.blob && up.w) $("upInfo").textContent = upInfoText();
 }
 
@@ -2235,7 +2236,9 @@ async function init() {
   if (up2.scale === 2 || up2.scale === 3) up.scale = up2.scale;
   if (up2.mode === "local" || up2.mode === "ai") up.mode = up2.mode;
   if (typeof up2.sharpen === "boolean") up.sharpen = up2.sharpen;
-  const saveUpPrefs = () => store.set({ upPrefs: { scale: up.scale, mode: up.mode, sharpen: up.sharpen } });
+  if (up2.size === "2K" || up2.size === "4K") up.size = up2.size;
+  const saveUpPrefs = () => store.set({ upPrefs: { scale: up.scale, mode: up.mode, size: up.size, sharpen: up.sharpen } });
+  $("upSize").addEventListener("click", (e) => { const b = e.target.closest(".rchip"); if (b) { up.size = b.dataset.z; renderUpScale(); saveUpPrefs(); } });
   renderUpScale();
   $("upScale").addEventListener("click", (e) => { const b = e.target.closest(".rchip"); if (b) { up.scale = Number(b.dataset.s); renderUpScale(); saveUpPrefs(); } });
   $("upMode").addEventListener("click", (e) => { const b = e.target.closest(".rchip"); if (b) { up.mode = b.dataset.m; renderUpScale(); saveUpPrefs(); } });
