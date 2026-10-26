@@ -231,6 +231,12 @@ const LOCKED_ROLES = [
     en: "PRODUCT LAYOUT PLATE - the protected product is already at its final position and size on a gray placeholder; follow the product lock rules below." },
   { id: "draft", label: "선택한 시안", ko: "고화질로 다시 만들 시안",
     en: "CHOSEN DRAFT - the approved draft. Recreate exactly this composition, poses, framing, colors and text placement at higher fidelity and finer detail; do not redesign it." },
+  { id: "edit_base", label: "수정할 원본", ko: "부분 수정할 원본 그림",
+    en: "ORIGINAL - the picture to edit." },
+  { id: "edit_mask", label: "수정 영역", ko: "다시 그릴 곳을 빨갛게 표시한 같은 그림",
+    en: "EDIT AREA - the same picture with the only area to change highlighted in red." },
+  { id: "edit_ref", label: "참고 이미지", ko: "칠한 곳에 넣을 것의 참고 사진",
+    en: "REFERENCE - what to put into the highlighted area." },
 ];
 
 function roleOf(r) { return REF_ROLES.concat(LOCKED_ROLES).find((x) => x.id === (r && r.role)) || REF_ROLES[0]; }
@@ -845,6 +851,313 @@ function upscaledCard(e, card) {
   acts.append(s, t); card.append(acts);
 }
 
+/* ====================================================================
+ * 🖌 마스크 엔진: 그림(base) + 다시 그릴 곳(mask) -> 그 부분만 새로 그린 그림
+ * 부분 수정(inpaint)은 칠한 곳이 mask, 확장(outpaint)은 원본을 큰 캔버스에 놓고 빈 여백을 mask로 넘기면 같은 엔진을 그대로 씁니다.
+ * 1) 제공자가 만들 수 있는 가장 가까운 비율 틀(frame)에 base를 맞춰 넣고(남는 곳은 회색, mask 아님)
+ * 2) OpenAI는 마스크를 직접 보내고, Gemini·Qwen은 칠한 곳을 빨갛게 표시한 그림을 함께 보냅니다
+ * 3) 결과에서 틀을 걷어 원래 크기로 되돌린 뒤, 부드럽게 번진 mask로 그 부분만 base 위에 붙입니다 (나머지는 원본 픽셀 그대로)
+ * ==================================================================== */
+const EDIT_REF_RULE = "Match the reference's shape, colors, materials, pattern and details, but adapt its lighting, angle, perspective and scale so it fits the scene naturally.";
+const EDIT_PROMPT_OPENAI = (p, hasRef) => [
+  "Edit only the transparent (masked) area of the first image.",
+  `In that area: ${p}`,
+  hasRef ? `The second image is a reference for what to put into the masked area. ${EDIT_REF_RULE} Do not copy the reference's background.` : "",
+  "Keep everything outside the mask exactly the same. Match the existing lighting, colors, perspective, grain and art style so the change blends in with no visible seams. Leave the gray bars at the edges (if any) as they are.",
+].filter(Boolean).join("\n");
+const EDIT_PROMPT_MARKED = (p, hasRef) => [
+  "Image 1 is the original picture. Image 2 is the same picture with the area to change highlighted in red.",
+  hasRef ? `Image 3 is a reference for what to put into the highlighted area. ${EDIT_REF_RULE} Do not copy Image 3's background.` : "",
+  `Change ONLY the highlighted area of Image 1: ${p}`,
+  "Everything outside the red area must stay exactly as in Image 1: same composition, framing, people, products, text and colors. Blend the edited area seamlessly with matching lighting, perspective and style.",
+  "Return the full edited version of Image 1 at the same framing, with no red highlight. Leave the gray bars at the edges (if any) as they are.",
+].filter(Boolean).join("\n");
+
+function newCanvas(w, h) { const c = document.createElement("canvas"); c.width = w; c.height = h; return c; }
+function canvasB64(c, mime, q) { return { mime, b64: c.toDataURL(mime, q).split(",")[1] }; }
+
+/* 칠한 곳(알파)이 있는지 */
+function maskArea(mask) {
+  const d = mask.getContext("2d").getImageData(0, 0, mask.width, mask.height).data;
+  let n = 0; for (let i = 3; i < d.length; i += 4) if (d[i] > 16) n++;
+  return n / (mask.width * mask.height);
+}
+
+/* 이 제공자가 실제로 돌려주는 비율 중 그림에 가장 가까운 비율 */
+function nearestOutRatio(prov, aspect, quality) {
+  const err = (r) => Math.abs(Math.log(outputAspect(prov, r, quality) / aspect));
+  return RATIOS.filter((r) => !CROP_RATIOS.has(r)).reduce((a, b) => (err(b) < err(a) ? b : a));
+}
+
+function editQuality(prov, w, h) {
+  const big = Math.max(w, h) > 1100;
+  return prov === "gemini" ? (big ? "2K" : "1K") : prov === "qwen" ? (big ? "2K" : "auto") : "high";
+}
+
+/* 칠한 곳을 빨갛게 표시한 그림 (Gemini·Qwen 요청과 프롬프트 자동 작성에 씀) */
+function markedImage(img, mask) {
+  const w = img.width, h = img.height;
+  const tint = newCanvas(w, h), tx = tint.getContext("2d");
+  tx.fillStyle = "#ff1e3c"; tx.fillRect(0, 0, w, h); tx.globalCompositeOperation = "destination-in"; tx.drawImage(mask, 0, 0, w, h);
+  const marked = newCanvas(w, h), mx = marked.getContext("2d");
+  mx.drawImage(img, 0, 0); mx.globalAlpha = 0.6; mx.drawImage(tint, 0, 0);
+  return marked;
+}
+
+async function maskEdit({ model, base, mask, prompt, quality, ref }) {
+  const prov = model.provider, key = state.keys[prov];
+  if (!key) throw new Error(`${PROVIDER_LABEL[prov] || prov} API 키가 없습니다. ⚙ API 키 설정에서 입력하세요.`);
+  const W = base.width, H = base.height;
+  if (maskArea(mask) < 0.0005) throw new Error("다시 그릴 곳을 브러시로 칠해 주세요.");
+  // 1) 틀에 맞춰 넣기
+  const ratio = nearestOutRatio(prov, W / H, quality);
+  let fw, fh;
+  if (prov === "openai") [fw, fh] = openaiSize(ratio, quality).split("x").map(Number);
+  else { const a = outputAspect(prov, ratio, quality), L = Math.min(2048, Math.max(1024, W, H)); [fw, fh] = a >= 1 ? [L, Math.round(L / a)] : [Math.round(L * a), L]; }
+  const s = Math.min(fw / W, fh / H), rw = Math.round(W * s), rh = Math.round(H * s);
+  const rect = { x: Math.round((fw - rw) / 2), y: Math.round((fh - rh) / 2), w: rw, h: rh };
+  const frame = newCanvas(fw, fh), fx = frame.getContext("2d");
+  fx.fillStyle = "#808080"; fx.fillRect(0, 0, fw, fh); fx.imageSmoothingQuality = "high"; fx.drawImage(base, rect.x, rect.y, rw, rh);
+  const fmask = newCanvas(fw, fh); fmask.getContext("2d").drawImage(mask, rect.x, rect.y, rw, rh);
+
+  // 2) 제공자별 요청
+  let img;
+  if (prov === "openai") {
+    // OpenAI 마스크: 투명한 곳 = 다시 그릴 곳
+    const om = newCanvas(fw, fh), ox = om.getContext("2d");
+    ox.fillStyle = "#000"; ox.fillRect(0, 0, fw, fh); ox.globalCompositeOperation = "destination-out"; ox.drawImage(fmask, 0, 0);
+    const toBlob = (c) => new Promise((r) => c.toBlob(r, "image/png"));
+    const fd = new FormData();
+    fd.append("model", model.id); fd.append("prompt", EDIT_PROMPT_OPENAI(prompt, !!ref)); fd.append("size", `${fw}x${fh}`); fd.append("quality", quality); fd.append("n", "1");
+    // 마스크는 첫 번째 이미지에만 적용되고, 참고 이미지는 두 번째로 붙입니다
+    fd.append("image[]", await toBlob(frame), "image.png"); fd.append("mask", await toBlob(om), "mask.png");
+    if (ref) fd.append("image[]", b64ToBlob(ref.b64, ref.mime), "reference.jpg");
+    const res = await fetch("https://api.openai.com/v1/images/edits", { method: "POST", headers: { Authorization: `Bearer ${key}` }, body: fd });
+    if (!res.ok) throw await httpError(res, "OpenAI");
+    const j = await res.json(); const d = j.data && j.data[0];
+    if (!d || !(d.b64_json || d.url)) throw new Error("OpenAI가 이미지를 돌려주지 않았습니다.");
+    img = d.b64_json ? { mime: "image/png", b64: d.b64_json } : { mime: "image/png", b64: await blobToB64(await (await fetch(d.url)).blob()) };
+  } else {
+    const refs = [Object.assign(canvasB64(frame, "image/jpeg", 0.93), { role: "edit_base" }), Object.assign(canvasB64(markedImage(frame, fmask), "image/jpeg", 0.9), { role: "edit_mask" })];
+    if (ref) refs.push({ mime: ref.mime, b64: ref.b64, role: "edit_ref" });
+    img = prov === "gemini" ? await genGemini(key, model.id, EDIT_PROMPT_MARKED(prompt, !!ref), refs, ratio, quality)
+      : await genQwen(key, state.qwenBase, model.id, EDIT_PROMPT_MARKED(prompt, !!ref), refs, ratio, quality);
+  }
+
+  // 3) 틀을 걷어 원래 크기로 -> 번진 mask로 그 부분만 붙이기
+  const bmp = await createImageBitmap(b64ToBlob(img.b64, img.mime));
+  const sx = bmp.width / fw, sy = bmp.height / fh;
+  const raw = newCanvas(W, H), rx = raw.getContext("2d"); rx.imageSmoothingQuality = "high";
+  rx.drawImage(bmp, rect.x * sx, rect.y * sy, rect.w * sx, rect.h * sy, 0, 0, W, H); bmp.close();
+  // 칠한 곳은 전부 새 그림으로 바뀌고, 번지는 경계는 칠한 곳 바깥에 생기도록 mask를 번짐 폭만큼 넓힌 뒤 흐립니다
+  const fr = Math.max(2, Math.round(Math.min(W, H) * 0.008));
+  const soft = newCanvas(W, H), sx2 = soft.getContext("2d");
+  for (let a = 0; a < 8; a++) sx2.drawImage(mask, Math.round(Math.cos((a * Math.PI) / 4) * fr), Math.round(Math.sin((a * Math.PI) / 4) * fr));
+  sx2.drawImage(mask, 0, 0);
+  const patch = newCanvas(W, H), px = patch.getContext("2d");
+  px.drawImage(raw, 0, 0); px.globalCompositeOperation = "destination-in";
+  px.filter = `blur(${fr}px)`; px.drawImage(soft, 0, 0);
+  const out = newCanvas(W, H), oc = out.getContext("2d"); oc.drawImage(base, 0, 0); oc.drawImage(patch, 0, 0);
+  return { img: canvasB64(out, "image/png"), raw: canvasB64(raw, "image/png"), ratio };
+}
+
+/* ---------- 🖌 부분 수정 창 (브러시로 칠하기) ---------- */
+const ed = { entry: null, base: null, mask: null, tool: "brush", size: 40, undo: [], drawing: false, last: null, ref: null, autoText: "", autoPending: false, autoBusy: false };
+const EDIT_NOTE = {
+  openai: "OpenAI는 칠한 영역(마스크)을 직접 받아 그 부분만 다시 그립니다. 가장 정확한 방식이에요.",
+  gemini: "Gemini는 마스크 기능이 없어 칠한 곳을 빨갛게 표시해 보여 주고, 결과에서 칠한 부분만 원본에 다시 붙입니다.",
+  qwen: "Qwen은 칠한 곳을 빨갛게 표시해 보여 주고, 결과에서 칠한 부분만 원본에 다시 붙입니다. (부분 수정은 미검증)",
+};
+function edSay(msg, kind) { const el = $("edStatus"); el.textContent = msg || ""; el.className = "status" + (kind ? " " + kind : ""); }
+
+function editModels() { return allModels().filter((m) => m.provider !== "custom" && state.keys[m.provider]); }
+
+function refreshEditModel() {
+  const m = editModels().find((x) => x.id === $("edModel").value);
+  if (!m) { $("edModelNote").textContent = ""; $("edCost").textContent = ""; return; }
+  const q = editQuality(m.provider, ed.base.width, ed.base.height), usd = unitUsd(m.id, q);
+  $("edModelNote").textContent = EDIT_NOTE[m.provider] || "";
+  $("edCost").textContent = `예상 비용(1회): ${usd ? `약 $${usd} (≈ ${(Math.round((usd * USD_KRW) / 10) * 10).toLocaleString()}원)` : m.cost || "확인 필요"} · ${q} · 보통 20초~1분`;
+}
+
+function edPoint(ev) {
+  const r = ed.mask.getBoundingClientRect();
+  return { x: (ev.clientX - r.left) * ed.mask.width / r.width, y: (ev.clientY - r.top) * ed.mask.height / r.height, k: ed.mask.width / r.width };
+}
+
+function edStroke(a, b) {
+  const ctx = ed.mask.getContext("2d");
+  ctx.globalCompositeOperation = ed.tool === "erase" ? "destination-out" : "source-over";
+  ctx.strokeStyle = ctx.fillStyle = "#ff1e3c"; ctx.lineCap = ctx.lineJoin = "round"; ctx.lineWidth = ed.size * b.k;
+  ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+}
+
+function edCursor(ev) {
+  const c = $("edCursor"), st = $("edStage").getBoundingClientRect();
+  if (!ev) { c.hidden = true; return; }
+  c.hidden = false; c.style.width = c.style.height = `${ed.size}px`;
+  c.style.left = `${ev.clientX - st.left - ed.size / 2}px`; c.style.top = `${ev.clientY - st.top - ed.size / 2}px`;
+}
+
+/* ---------- 🖼 참고 이미지 -> 프롬프트 자동 작성 ---------- */
+function edAutoSay(msg, kind) { const el = $("edAutoStatus"); el.textContent = msg || ""; el.className = "status" + (kind ? " " + kind : ""); }
+
+/* 프롬프트 도우미에서 고른 엔진(Gemini/Claude)으로 부르고, 그 키가 없으면 있는 쪽으로 */
+function assistCaller() {
+  const engine = $("assistEngine").value;
+  const gem = (s, u, refs) => callAssist(state.keys.gemini, state.assistModel || "gemini-2.5-flash", s, u, refs);
+  const cla = (s, u, refs) => callClaude(state.keys.claude, engine.startsWith("claude") ? engine : "claude-haiku-5-5", s, u, refs);
+  if (engine.startsWith("claude") && state.keys.claude) return cla;
+  if (state.keys.gemini) return gem;
+  return state.keys.claude ? cla : null;
+}
+
+const EDIT_ASSIST_SYSTEM = [
+  "You write short Korean instructions for an AI image editor that repaints only a marked area (inpainting).",
+  "Image 1: the original picture. Image 2: the same picture with the area to repaint highlighted in red (if nothing is red, the user has not marked it yet). Image 3: a reference photo of what the user wants in that area.",
+  "Write one or two natural Korean sentences telling the editor what to put into the red area based on the reference: name the thing and describe its shape, color, material, pattern and pose concretely, and ask it to fit the scene's lighting, angle and scale.",
+  "Describe only the red area. Do not mention the reference's background. Return ONLY JSON: {\"prompt_ko\":\"\"}",
+].join("\n");
+
+/* 도우미에 보낼 작은 그림 (긴 변 1024) */
+function smallB64(c) {
+  const s = Math.min(1, 1024 / Math.max(c.width, c.height)), o = newCanvas(Math.round(c.width * s), Math.round(c.height * s));
+  o.getContext("2d").drawImage(c, 0, 0, o.width, o.height);
+  return canvasB64(o, "image/jpeg", 0.88);
+}
+
+async function writeEditPrompt(force) {
+  if (!ed.ref || ed.autoBusy) return;
+  const cur = $("edPrompt").value.trim();
+  if (!force && cur && cur !== ed.autoText) { edAutoSay("직접 쓴 프롬프트가 있어 덮어쓰지 않았어요. ✨ 버튼을 누르면 참고 이미지로 다시 씁니다."); return; }
+  if (maskArea(ed.mask) < 0.0005) { ed.autoPending = true; edAutoSay("다시 그릴 곳을 칠하면 참고 이미지를 보고 프롬프트를 자동으로 써요."); return; }
+  const call = assistCaller();
+  if (!call) { edAutoSay("프롬프트 자동 작성은 Gemini 또는 Claude API 키가 필요합니다. 직접 적어도 됩니다.", "err"); return; }
+  ed.autoPending = false; ed.autoBusy = true; $("edAuto").disabled = true;
+  edAutoSay("참고 이미지를 보고 프롬프트를 쓰는 중... (5~15초)");
+  try {
+    const refs = [smallB64(ed.base), smallB64(markedImage(ed.base, ed.mask)), ed.ref];
+    const r = parseJsonLoose(await call(EDIT_ASSIST_SYSTEM, "참고 이미지(Image 3)를 빨갛게 칠한 곳에 자연스럽게 넣는 지시문을 써 줘.", refs)) || {};
+    const text = String(r.prompt_ko || "").trim();
+    if (!text) throw new Error("도우미가 빈 프롬프트를 돌려주었습니다.");
+    $("edPrompt").value = ed.autoText = text;
+    edAutoSay("참고 이미지로 프롬프트를 썼어요. 필요하면 고쳐서 쓰세요.", "ok");
+  } catch (err) { edAutoSay("프롬프트 자동 작성 실패: " + (err.message || err), "err"); }
+  finally { ed.autoBusy = false; $("edAuto").disabled = !ed.ref; }
+}
+
+async function setEditRef(blob) {
+  if (!blob) return;
+  try { ed.ref = await blobToResized(blob, 1536); } catch (e) { edAutoSay("참고 이미지를 읽지 못했습니다.", "err"); return; }
+  renderEditRef();
+  writeEditPrompt(false);
+}
+
+function renderEditRef() {
+  $("edRefPick").hidden = !ed.ref; $("dropEdRef").hidden = !!ed.ref; $("edAuto").disabled = !ed.ref || ed.autoBusy;
+  if (ed.ref) $("edRefThumb").src = ed.ref.dataUrl;
+}
+
+function setupEditor() {
+  const m = $("edMask");
+  m.addEventListener("pointerdown", (ev) => {
+    ev.preventDefault(); m.setPointerCapture(ev.pointerId);
+    ed.undo.push(m.getContext("2d").getImageData(0, 0, m.width, m.height)); if (ed.undo.length > 10) ed.undo.shift();
+    ed.drawing = true; ed.last = edPoint(ev); edStroke(ed.last, ed.last); $("edUndo").disabled = false;
+  });
+  m.addEventListener("pointermove", (ev) => { edCursor(ev); if (!ed.drawing) return; const p = edPoint(ev); edStroke(ed.last, p); ed.last = p; });
+  const stop = () => { ed.drawing = false; };
+  m.addEventListener("pointerup", () => { stop(); if (ed.autoPending) writeEditPrompt(false); }); m.addEventListener("pointercancel", stop);
+  // 참고 이미지: 끌어다 놓기 · 클릭해서 선택 · 창이 열린 동안 Ctrl+V
+  const dropR = $("dropEdRef"), fileR = $("fileEdRef");
+  const pickR = (list) => setEditRef(Array.from(list || []).find((x) => x.type && x.type.startsWith("image/")));
+  dropR.addEventListener("click", () => fileR.click());
+  dropR.addEventListener("keydown", (ev) => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); fileR.click(); } });
+  fileR.addEventListener("change", () => { pickR(fileR.files); fileR.value = ""; });
+  ["dragenter", "dragover"].forEach((t) => dropR.addEventListener(t, (ev) => { ev.preventDefault(); dropR.classList.add("over"); }));
+  ["dragleave", "drop"].forEach((t) => dropR.addEventListener(t, (ev) => { ev.preventDefault(); dropR.classList.remove("over"); }));
+  dropR.addEventListener("drop", (ev) => pickR(ev.dataTransfer.files));
+  $("editDlg").addEventListener("paste", (ev) => {
+    const files = Array.from((ev.clipboardData && ev.clipboardData.files) || []).filter((f) => f.type.startsWith("image/"));
+    if (files.length) { ev.preventDefault(); ev.stopPropagation(); pickR(files); }
+  });
+  $("edRefDel").addEventListener("click", () => { ed.ref = null; ed.autoPending = false; renderEditRef(); edAutoSay(""); });
+  $("edAuto").addEventListener("click", () => writeEditPrompt(true));
+  m.addEventListener("pointerleave", () => edCursor(null));
+  document.querySelectorAll("#edTool .rchip").forEach((b) => b.addEventListener("click", () => {
+    ed.tool = b.dataset.t;
+    document.querySelectorAll("#edTool .rchip").forEach((x) => { const on = x === b; x.classList.toggle("on", on); x.setAttribute("aria-checked", on); });
+  }));
+  $("edSize").addEventListener("input", () => { ed.size = Number($("edSize").value); });
+  $("edUndo").addEventListener("click", () => { const d = ed.undo.pop(); if (d) m.getContext("2d").putImageData(d, 0, 0); $("edUndo").disabled = !ed.undo.length; });
+  $("edClear").addEventListener("click", () => { ed.undo.push(m.getContext("2d").getImageData(0, 0, m.width, m.height)); m.getContext("2d").clearRect(0, 0, m.width, m.height); $("edUndo").disabled = false; });
+  $("edModel").addEventListener("change", refreshEditModel);
+  // 칠한 곳·요청이 없으면 창을 닫지 않고 알려 줍니다
+  $("edGo").addEventListener("click", (ev) => {
+    if (maskArea(m) < 0.0005) { ev.preventDefault(); edSay("다시 그릴 곳을 브러시로 칠해 주세요.", "err"); return; }
+    if (!$("edPrompt").value.trim()) { ev.preventDefault(); edSay("칠한 부분을 어떻게 바꿀지 적어 주세요.", "err"); $("edPrompt").focus(); }
+  });
+}
+
+async function openMaskEditor(e) {
+  if (!editModels().length) { setStatus("부분 수정은 Gemini·OpenAI·Qwen 중 하나의 API 키가 필요합니다.", "err"); $("dlg").showModal(); return; }
+  const bmp = await createImageBitmap(b64ToBlob(e.b64, e.mime));
+  const W = bmp.width, H = bmp.height;
+  const base = newCanvas(W, H); base.getContext("2d").drawImage(bmp, 0, 0); bmp.close();
+  if (ed.entry !== e) { $("edPrompt").value = ""; Object.assign(ed, { ref: null, autoText: "" }); }
+  Object.assign(ed, { entry: e, base, undo: [], drawing: false, autoPending: false });
+  renderEditRef(); edAutoSay("");
+  const img = $("edImg"), m = $("edMask");
+  img.width = m.width = W; img.height = m.height = H; ed.mask = m;
+  img.getContext("2d").drawImage(base, 0, 0); m.getContext("2d").clearRect(0, 0, W, H);
+  // 창 안에 가로·세로 모두 들어가게 표시 크기를 정합니다 (내부 해상도는 원본 그대로)
+  const st = $("edStage"); st.style.aspectRatio = `${W} / ${H}`; st.style.width = `min(100%, ${((52 * W) / H).toFixed(2)}vh)`;
+  $("edUndo").disabled = true; edSay("");
+  const sel = $("edModel"), list = editModels(), cur = currentModel(), prev = sel.value;
+  sel.textContent = "";
+  list.forEach((x) => { const o = document.createElement("option"); o.value = x.id; o.textContent = `${x.label}${VERIFIED.has(x.id) ? "" : " (미검증)"}`; sel.append(o); });
+  sel.value = list.some((x) => x.id === prev) ? prev : list.some((x) => x.id === cur.id) ? cur.id : (list.find((x) => x.provider === "openai" && VERIFIED.has(x.id)) || list[0]).id;
+  refreshEditModel();
+  const dlg = $("editDlg"); dlg.returnValue = "";
+  dlg.addEventListener("close", () => { if (dlg.returnValue === "go") runMaskEdit(e, $("edPrompt").value.trim(), sel.value, ed.ref); }, { once: true });
+  dlg.showModal();
+}
+
+/* 🖌 내 이미지 부분 수정: 생성하지 않은 이미지도 결과 카드로 올린 뒤 바로 편집 창을 엽니다 (긴 변 2048px까지) */
+async function openOwnImage(blob) {
+  if (!blob) return;
+  const say = (msg, kind) => { const el = $("edOwnStatus"); el.textContent = msg || ""; el.className = "status" + (kind ? " " + kind : ""); };
+  try {
+    const bmp = await createImageBitmap(blob);
+    const s = Math.min(1, 2048 / Math.max(bmp.width, bmp.height)), c = newCanvas(Math.round(bmp.width * s), Math.round(bmp.height * s));
+    c.getContext("2d").drawImage(bmp, 0, 0, c.width, c.height); bmp.close();
+    const img = canvasB64(c, "image/png");
+    const entry = { label: blob.name ? `내 이미지 (${blob.name})` : "내 이미지", model: "my_image", prompt: "", ratio: `${c.width}×${c.height}`, mime: img.mime, b64: img.b64,
+      dataUrl: `data:${img.mime};base64,${img.b64}`, time: Date.now(), tag: s < 1 ? "긴 변 2048px로 줄임" : "" };
+    state.history.unshift(entry); renderGallery();
+    say("결과 목록에 올렸어요. 편집 창에서 바꿀 곳을 칠하세요.", "ok");
+    await openMaskEditor(entry);
+  } catch (e) { say("이미지를 읽지 못했습니다: " + (e.message || e), "err"); }
+}
+
+async function runMaskEdit(src, prompt, modelId, ref) {
+  const model = editModels().find((x) => x.id === modelId);
+  const base = ed.base, mask = newCanvas(base.width, base.height); mask.getContext("2d").drawImage(ed.mask, 0, 0);
+  const quality = editQuality(model.provider, base.width, base.height);
+  const entry = { label: `${model.label} 부분 수정`, model: model.id, prompt, ratio: src.ratio, quality, pending: true, time: Date.now(), tag: ref ? "🖌 부분 수정 · 참고 이미지" : "🖌 부분 수정",
+    before: { mime: src.mime, b64: src.b64 } };
+  state.history.unshift(entry); renderGallery();
+  setStatus(`🖌 ${model.label}로 칠한 부분을 다시 만드는 중... (20초~1분)`);
+  try {
+    const t0 = Date.now();
+    const r = await maskEdit({ model, base, mask, prompt, quality, ref });
+    entry.ms = Date.now() - t0; entry.after = r.img;
+    entry.mime = r.img.mime; entry.b64 = r.img.b64; entry.dataUrl = `data:${r.img.mime};base64,${r.img.b64}`;
+    setStatus("🖌 부분 수정 완료! 결과 카드의 '수정 전 보기'로 비교해 보세요.", "ok");
+  } catch (err) { entry.error = err.message || String(err); setStatus(entry.error, "err"); }
+  entry.pending = false; renderGallery();
+}
+
 function renderGallery() {
   const g = $("gallery"); g.textContent = "";
   state.history.forEach((e) => {
@@ -882,6 +1195,16 @@ function renderGallery() {
         t.addEventListener("click", () => { const v = showingRaw ? e.comp : e.raw; e.mime = v.mime; e.b64 = v.b64; e.dataUrl = `data:${v.mime};base64,${v.b64}`; renderGallery(); });
         acts.append(t);
       }
+      if (e.before && e.after) {
+        const showingBefore = e.b64 === e.before.b64;
+        const t = document.createElement("button"); t.type = "button"; t.textContent = showingBefore ? "수정 후 보기" : "수정 전 보기";
+        t.addEventListener("click", () => { const v = showingBefore ? e.after : e.before; e.mime = v.mime; e.b64 = v.b64; e.dataUrl = `data:${v.mime};base64,${v.b64}`; renderGallery(); });
+        acts.append(t);
+      }
+      const eb = document.createElement("button"); eb.type = "button"; eb.textContent = "🖌 부분 수정";
+      eb.title = "마음에 안 드는 곳을 브러시로 칠하면 그 부분만 AI가 다시 그립니다";
+      eb.addEventListener("click", () => openMaskEditor(e).catch((err) => setStatus(err.message || String(err), "err")));
+      acts.append(eb);
       const vb = document.createElement("button"); vb.type = "button"; vb.textContent = "🎬 동영상";
       vb.title = "이 이미지를 움직이는 짧은 영상으로 만듭니다 (MiniMax H3 Max · eachlabs)"; vb.disabled = !!(e.video && e.video.status === "running");
       vb.addEventListener("click", () => openVideoDialog(e));
@@ -2123,6 +2446,7 @@ async function init() {
   if (ap.engine && [...$("assistEngine").options].some((o) => o.value === ap.engine)) $("assistEngine").value = ap.engine;
   renderPresets();
   renderRoleBar();
+  setupEditor();
   const saveAssistPrefs = () => store.set({ assistPrefs: { preset: state.preset, kw: $("kw").value, autoAnalyze: $("autoAnalyze").checked, engine: $("assistEngine").value } });
   $("presets").addEventListener("click", saveAssistPrefs);
   $("assistEngine").addEventListener("change", saveAssistPrefs);
@@ -2232,6 +2556,14 @@ async function init() {
   ["dragenter", "dragover"].forEach((t) => dropU.addEventListener(t, (e) => { e.preventDefault(); dropU.classList.add("over"); }));
   ["dragleave", "drop"].forEach((t) => dropU.addEventListener(t, (e) => { e.preventDefault(); dropU.classList.remove("over"); }));
   dropU.addEventListener("drop", (e) => pickU(e.dataTransfer.files));
+  const dropE = $("dropEd"), fileE = $("fileEd");
+  const pickE = (list) => openOwnImage(Array.from(list || []).find((x) => x.type.startsWith("image/")));
+  dropE.addEventListener("click", () => fileE.click());
+  dropE.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); fileE.click(); } });
+  fileE.addEventListener("change", () => { pickE(fileE.files); fileE.value = ""; });
+  ["dragenter", "dragover"].forEach((t) => dropE.addEventListener(t, (e) => { e.preventDefault(); dropE.classList.add("over"); }));
+  ["dragleave", "drop"].forEach((t) => dropE.addEventListener(t, (e) => { e.preventDefault(); dropE.classList.remove("over"); }));
+  dropE.addEventListener("drop", (e) => pickE(e.dataTransfer.files));
   const up2 = saved.upPrefs || {};
   if (up2.scale === 2 || up2.scale === 3) up.scale = up2.scale;
   if (up2.mode === "local" || up2.mode === "ai") up.mode = up2.mode;

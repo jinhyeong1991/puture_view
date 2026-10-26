@@ -178,6 +178,21 @@ dialog::backdrop { background:rgba(0,0,0,.45); }
 .vdimgs img { max-height:180px; max-width:100%; border-radius:8px; border:1px solid var(--line); }
 .vdimgs.many img { width:84px; height:84px; object-fit:cover; }
 
+/* 🖌 부분 수정 */
+dialog.wide { width:min(920px, 96vw); }
+.edtools { display:flex; flex-wrap:wrap; align-items:center; gap:8px 12px; margin-bottom:10px; }
+.edtools .rolebar { margin:0; }
+.edtools .ghost { width:auto; padding:5px 10px; font-size:12px; }
+.edsize { display:flex; align-items:center; gap:6px; font-size:12px; color:var(--sub); }
+.edstage { position:relative; margin:0 auto 12px; border-radius:8px; overflow:hidden; border:1px solid var(--line); background:var(--bg); touch-action:none; }
+.edstage canvas { position:absolute; inset:0; width:100%; height:100%; display:block; }
+#edMask { opacity:.5; cursor:none; }
+.drop.edref { padding:10px; font-size:12px; }
+.edautorow { display:flex; flex-wrap:wrap; align-items:center; gap:4px 10px; margin-bottom:6px; }
+.edautorow .status { margin:0; }
+#edRefPick button { margin-left:auto; }
+.edcursor { position:absolute; border:2px solid #fff; border-radius:50%; box-shadow:0 0 0 1px rgba(0,0,0,.6); pointer-events:none; }
+
 /* 🔍 업스케일 */
 .upbox { border:1px solid var(--line); background:var(--chip); border-radius:12px; padding:12px 14px; margin-bottom:14px; }
 .upbox h3 { margin:0 0 8px; font-size:15px; }
