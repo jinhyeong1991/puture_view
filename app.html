@@ -196,6 +196,23 @@
       <h2 id="h-out">2. 결과</h2>
       <button id="btnClear" class="ghost" type="button" disabled>결과 지우기</button>
     </div>
+    <section class="upbox" aria-labelledby="h-up">
+      <h3 id="h-up">🔍 업스케일 (원본 그대로 확대)</h3>
+      <div id="dropUp" class="drop" tabindex="0" role="button" aria-label="업스케일할 이미지 선택 또는 끌어다 놓기">
+        확대할 이미지를 끌어다 놓거나 클릭해서 선택
+        <input id="fileUp" type="file" accept="image/*" hidden>
+      </div>
+      <div id="upPick" class="uppick" hidden><img id="upThumb" alt="업스케일할 이미지"><span id="upInfo"></span></div>
+      <div class="row2">
+        <div id="upScale" class="rolebar" role="radiogroup" aria-label="확대 배율">
+          <button type="button" class="rchip on" data-s="2" role="radio" aria-checked="true">2배</button>
+          <button type="button" class="rchip" data-s="3" role="radio" aria-checked="false">3배</button>
+        </div>
+        <button id="btnUpscale" type="button" class="primary alt upgo" disabled>업스케일</button>
+      </div>
+      <small class="hint">AI가 아니라 원본 픽셀만으로 확대(Lanczos3)해서 모양·글자·색이 바뀌지 않습니다. PNG 무손실로 저장됩니다. 결과 카드의 🔍 업스케일 버튼으로도 쓸 수 있어요.</small>
+      <p id="upStatus" class="status" role="status" aria-live="polite"></p>
+    </section>
     <div id="empty" class="empty">왼쪽에서 모델과 프롬프트를 정하고 "이미지 생성"을 누르세요.<br>결과는 이 화면에만 보관되며 탭을 닫으면 사라지니 필요한 이미지는 저장하세요.</div>
     <div id="gallery" class="gallery"></div>
   </section>

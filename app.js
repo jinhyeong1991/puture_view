@@ -723,10 +723,79 @@ async function copyText(text, btn) {
   if (btn) { const o = btn.textContent; btn.textContent = "복사됨"; setTimeout(() => (btn.textContent = o), 1200); }
 }
 
+/* ---------- 🔍 업스케일 (Lanczos3 · upscale.js 워커) ---------- */
+const up = { blob: null, url: "", scale: 2, busy: false };
+function upSay(msg, kind) { const el = $("upStatus"); el.textContent = msg || ""; el.className = "status" + (kind ? " " + kind : ""); }
+
+async function runUpscaleWorker(blob, scale, onProgress) {
+  const bitmap = await createImageBitmap(blob);
+  return new Promise((resolve, reject) => {
+    const wk = new Worker("upscale.js");
+    wk.onmessage = ({ data }) => {
+      if (data.error) { wk.terminate(); reject(new Error(data.error)); }
+      else if (data.done) { wk.terminate(); resolve(data); }
+      else if (onProgress) onProgress(data);
+    };
+    wk.onerror = (ev) => { wk.terminate(); reject(new Error(ev.message || "업스케일 중 오류가 났습니다.")); };
+    wk.postMessage({ bitmap, scale }, [bitmap]);
+  });
+}
+
+async function upscaleAndShow(blob, scale, label) {
+  if (up.busy) { upSay("이미 업스케일 중입니다. 끝난 뒤 다시 눌러 주세요.", "err"); return; }
+  up.busy = true; $("btnUpscale").disabled = true;
+  const t0 = Date.now();
+  upSay(`${scale}배 업스케일 중...`);
+  try {
+    const r = await runUpscaleWorker(blob, scale, (p) => upSay(p.encoding ? "PNG로 저장하는 중..." : `${scale}배 업스케일 중... ${Math.round(p.progress * 100)}%`));
+    const entry = { upscaled: true, label, model: `upscale_x${scale}`, ratio: `${r.w}×${r.h} → ${r.outW}×${r.outH}`, prompt: "", mime: "image/png",
+      dataUrl: URL.createObjectURL(r.blob), srcUrl: URL.createObjectURL(blob), time: Date.now(), ms: Date.now() - t0, tag: `${scale}배 · PNG 무손실` };
+    entry.upUrl = entry.dataUrl;
+    state.history.unshift(entry); renderGallery();
+    upSay(`완료: ${r.outW}×${r.outH} (${(r.blob.size / 1048576).toFixed(1)}MB). 결과 카드에서 저장하세요.`, "ok");
+  } catch (e) { upSay(e.message, "err"); }
+  finally { up.busy = false; $("btnUpscale").disabled = !up.blob; }
+}
+
+async function setUpBlob(blob) {
+  if (!blob) return;
+  if (up.url) URL.revokeObjectURL(up.url);
+  up.blob = blob; up.url = URL.createObjectURL(blob);
+  $("upThumb").src = up.url; $("upPick").hidden = false; $("btnUpscale").disabled = up.busy;
+  try {
+    const bm = await createImageBitmap(blob); const { width: w, height: h } = bm; bm.close();
+    $("upInfo").textContent = `${blob.name || "이미지"} · ${w}×${h} → ${w * up.scale}×${h * up.scale}`;
+    up.w = w; up.h = h;
+  } catch (e) { $("upInfo").textContent = "이미지를 읽지 못했습니다."; up.blob = null; $("btnUpscale").disabled = true; }
+  upSay("");
+}
+
+function renderUpScale() {
+  document.querySelectorAll("#upScale .rchip").forEach((b) => { const on = Number(b.dataset.s) === up.scale; b.classList.toggle("on", on); b.setAttribute("aria-checked", on); });
+  if (up.blob && up.w) $("upInfo").textContent = `${up.blob.name || "이미지"} · ${up.w}×${up.h} → ${up.w * up.scale}×${up.h * up.scale}`;
+}
+
+function revokeUpscaled(list) { list.forEach((e) => { if (e.upscaled) { URL.revokeObjectURL(e.upUrl); URL.revokeObjectURL(e.srcUrl); } }); }
+
+function upscaledCard(e, card) {
+  const im = document.createElement("img"); im.src = e.dataUrl; im.alt = `${e.label} 결과`; card.append(im);
+  const meta = document.createElement("div"); meta.className = "meta";
+  const b = document.createElement("b"); b.textContent = e.label;
+  const info = document.createElement("span"); info.textContent = ` · ${e.ratio} · ${e.tag}${e.ms ? " · " + (e.ms / 1000).toFixed(1) + "초" : ""}${e.dataUrl === e.srcUrl ? " · 원본 보는 중" : ""}`;
+  meta.append(b, info); card.append(meta);
+  const acts = document.createElement("div"); acts.className = "acts";
+  const s = document.createElement("button"); s.type = "button"; s.textContent = "저장 (PNG)";
+  s.addEventListener("click", () => saveImage(Object.assign({}, e, { dataUrl: e.upUrl })));
+  const t = document.createElement("button"); t.type = "button"; t.textContent = e.dataUrl === e.srcUrl ? "업스케일 보기" : "원본 보기";
+  t.addEventListener("click", () => { e.dataUrl = e.dataUrl === e.srcUrl ? e.upUrl : e.srcUrl; renderGallery(); });
+  acts.append(s, t); card.append(acts);
+}
+
 function renderGallery() {
   const g = $("gallery"); g.textContent = "";
   state.history.forEach((e) => {
     const card = document.createElement("div"); card.className = "card";
+    if (e.upscaled) { upscaledCard(e, card); g.append(card); return; }
     if (e.pending) {
       const p = document.createElement("div"); p.className = "pending"; p.textContent = `${e.label} 생성 중...`; card.append(p);
     } else if (e.error) {
@@ -762,7 +831,10 @@ function renderGallery() {
       const vb = document.createElement("button"); vb.type = "button"; vb.textContent = "🎬 동영상";
       vb.title = "이 이미지를 움직이는 짧은 영상으로 만듭니다 (MiniMax H3 Max · eachlabs)"; vb.disabled = !!(e.video && e.video.status === "running");
       vb.addEventListener("click", () => openVideoDialog(e));
-      acts.append(vb);
+      const ub = document.createElement("button"); ub.type = "button"; ub.textContent = "🔍 업스케일";
+      ub.title = "위 업스케일 칸에서 고른 배율(2배/3배)로 원본 그대로 확대합니다 (AI 아님 · PNG 무손실)";
+      ub.addEventListener("click", () => upscaleAndShow(b64ToBlob(e.b64, e.mime), up.scale, `${e.label} 업스케일`));
+      acts.append(vb, ub);
       card.append(acts);
       if (e.video) card.append(videoNode(e));
       card.append(reviewNode(e));
@@ -2096,7 +2168,18 @@ async function init() {
   $("btnVideoDirect").addEventListener("click", openDirectVideo);
   $("drafts").addEventListener("change", refreshDraftNote);
   refreshDraftNote();
-  $("btnClear").addEventListener("click", () => { state.history = []; renderGallery(); });
+  $("btnClear").addEventListener("click", () => { revokeUpscaled(state.history); state.history = []; renderGallery(); });
+
+  const dropU = $("dropUp"), fileU = $("fileUp");
+  const pickU = (list) => setUpBlob(Array.from(list || []).find((x) => x.type.startsWith("image/")));
+  dropU.addEventListener("click", () => fileU.click());
+  dropU.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); fileU.click(); } });
+  fileU.addEventListener("change", () => { pickU(fileU.files); fileU.value = ""; });
+  ["dragenter", "dragover"].forEach((t) => dropU.addEventListener(t, (e) => { e.preventDefault(); dropU.classList.add("over"); }));
+  ["dragleave", "drop"].forEach((t) => dropU.addEventListener(t, (e) => { e.preventDefault(); dropU.classList.remove("over"); }));
+  dropU.addEventListener("drop", (e) => pickU(e.dataTransfer.files));
+  $("upScale").addEventListener("click", (e) => { const b = e.target.closest(".rchip"); if (b) { up.scale = Number(b.dataset.s); renderUpScale(); } });
+  $("btnUpscale").addEventListener("click", () => { if (up.blob) upscaleAndShow(up.blob, up.scale, `${up.blob.name || "이미지"} 업스케일`); });
 
   renderGallery();
   if (!state.keys.gemini && !state.keys.qwen && !state.keys.openai) setStatus("처음이라면 ⚙ API 키 설정에서 사용할 제공자의 키를 입력하세요.");
