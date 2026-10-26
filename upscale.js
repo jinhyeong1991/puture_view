@@ -69,10 +69,35 @@ function upscaleRGBA(src, w, h, outW, outH, onProgress) {
   return out;
 }
 
+// 선명하게: 밝기만 언샤프 마스크 (색 번짐 없이 테두리만 또렷하게, 모양은 그대로). 작은 차이(threshold)는 노이즈라 건드리지 않음
+function sharpenRGBA(px, w, h, radius, amount, threshold) {
+  const n = w * h, Y = new Uint8Array(n), T = new Uint8Array(n);
+  for (let i = 0, p = 0; i < n; i++, p += 4) Y[i] = (px[p] * 77 + px[p + 1] * 150 + px[p + 2] * 29) >> 8;
+  const box = (src, dst, len, count, stride, step) => { // 한 방향 상자 흐림 (가장자리는 끝 값 반복)
+    const span = 2 * radius + 1;
+    for (let c = 0; c < count; c++) {
+      const base = c * stride; let acc = 0;
+      for (let k = -radius; k <= radius; k++) acc += src[base + Math.min(len - 1, Math.max(0, k)) * step];
+      for (let i = 0; i < len; i++) {
+        dst[base + i * step] = (acc / span + 0.5) | 0;
+        acc += src[base + Math.min(len - 1, i + radius + 1) * step] - src[base + Math.max(0, i - radius) * step];
+      }
+    }
+  };
+  box(Y, T, w, h, w, 1); const B = new Uint8Array(n); box(T, B, h, w, 1, w); // 가로 → 세로
+  box(B, T, w, h, w, 1); box(T, B, h, w, 1, w); // 두 번 돌려 가우시안에 가깝게
+  for (let i = 0, p = 0; i < n; i++, p += 4) {
+    const d = Y[i] - B[i];
+    if (d > -threshold && d < threshold) continue;
+    const add = d * amount; px[p] += add; px[p + 1] += add; px[p + 2] += add;
+  }
+  return px;
+}
+
 if (typeof WorkerGlobalScope !== "undefined" && self instanceof WorkerGlobalScope) {
   self.onmessage = async ({ data }) => {
     try {
-      const { bitmap, scale } = data;
+      const { bitmap, scale, sharpen } = data;
       const w = bitmap.width, h = bitmap.height, outW = Math.round(w * scale), outH = Math.round(h * scale);
       checkSize(outW, outH);
       const c = new OffscreenCanvas(w, h), cx = c.getContext("2d", { willReadFrequently: true });
@@ -80,6 +105,7 @@ if (typeof WorkerGlobalScope !== "undefined" && self instanceof WorkerGlobalScop
       const src = cx.getImageData(0, 0, w, h).data;
       let last = 0;
       const px = upscaleRGBA(src, w, h, outW, outH, (p) => { const n = Math.floor(p * 100); if (n >= last + 5) { last = n; self.postMessage({ progress: p }); } });
+      if (sharpen) { self.postMessage({ progress: 1, sharpening: true }); sharpenRGBA(px, outW, outH, Math.max(1, Math.round(scale * 0.75)), 0.6, 3); }
       const oc = new OffscreenCanvas(outW, outH);
       oc.getContext("2d").putImageData(new ImageData(px, outW, outH), 0, 0);
       self.postMessage({ progress: 1, encoding: true });
@@ -89,4 +115,4 @@ if (typeof WorkerGlobalScope !== "undefined" && self instanceof WorkerGlobalScop
   };
 }
 
-if (typeof module !== "undefined") module.exports = { upscaleRGBA, weights, lanczos3 };
+if (typeof module !== "undefined") module.exports = { upscaleRGBA, sharpenRGBA, weights, lanczos3 };

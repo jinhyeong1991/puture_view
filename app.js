@@ -724,10 +724,11 @@ async function copyText(text, btn) {
 }
 
 /* ---------- 🔍 업스케일 (Lanczos3 · upscale.js 워커) ---------- */
-const up = { blob: null, url: "", scale: 2, busy: false };
+const up = { blob: null, url: "", scale: 2, mode: "local", sharpen: true, busy: false };
+const AI_UPSCALE_MODEL = { model: "real-esrgan", version: "0.0.1" }; // eachlabs · 처리 1초당 약 $0.00025
 function upSay(msg, kind) { const el = $("upStatus"); el.textContent = msg || ""; el.className = "status" + (kind ? " " + kind : ""); }
 
-async function runUpscaleWorker(blob, scale, onProgress) {
+async function runUpscaleWorker(blob, scale, onProgress, sharpen) {
   const bitmap = await createImageBitmap(blob);
   return new Promise((resolve, reject) => {
     const wk = new Worker("upscale.js");
@@ -737,22 +738,60 @@ async function runUpscaleWorker(blob, scale, onProgress) {
       else if (onProgress) onProgress(data);
     };
     wk.onerror = (ev) => { wk.terminate(); reject(new Error(ev.message || "업스케일 중 오류가 났습니다.")); };
-    wk.postMessage({ bitmap, scale }, [bitmap]);
+    wk.postMessage({ bitmap, scale, sharpen }, [bitmap]);
   });
+}
+
+/* ✨ AI 고화질: eachlabs Real-ESRGAN (흐림·JPEG 깨짐을 지우고 디테일을 복원. 작은 글자·로고가 살짝 바뀔 수 있음) */
+async function runAiUpscale(blob, scale, onProgress) {
+  if (!state.keys.eachlabs) throw new Error("AI 고화질은 eachlabs API 키가 필요합니다. ⚙ API 키 설정에서 입력하세요.");
+  const bm = await createImageBitmap(blob); const w = bm.width, h = bm.height;
+  if (w * scale > 16384 || h * scale > 16384) { bm.close(); throw new Error(`결과가 ${w * scale}×${h * scale}로 너무 큽니다. 2배로 줄이거나 더 작은 이미지를 사용하세요.`); }
+  // PNG면 그대로, 크면(15MB↑) 고품질 JPEG로 바꿔 보냄 (eachlabs 입력 한도 20MB)
+  let send = blob;
+  if (!/png|jpeg|webp/.test(blob.type) || blob.size > 15 * 1048576) {
+    const c = new OffscreenCanvas(w, h); c.getContext("2d").drawImage(bm, 0, 0);
+    send = await c.convertToBlob({ type: blob.size > 15 * 1048576 ? "image/jpeg" : "image/png", quality: 0.95 });
+  }
+  bm.close();
+  const image = `data:${send.type};base64,${await blobToB64(send)}`;
+  onProgress("AI 업스케일 요청 보내는 중...");
+  const j = await eachlabsFetch("/prediction", { method: "POST", body: JSON.stringify(Object.assign({}, AI_UPSCALE_MODEL, { input: { image, scale, face_enhance: false } })) });
+  const id = j.predictionID || j.id;
+  if (!id) throw new Error("eachlabs가 작업 번호를 돌려주지 않았습니다. " + JSON.stringify(j).slice(0, 200));
+  const t0 = Date.now();
+  for (;;) {
+    await new Promise((r) => setTimeout(r, 2500));
+    const p = await eachlabsFetch(`/prediction/${encodeURIComponent(id)}`);
+    if (p.status === "success") {
+      const url = videoUrlOf(p.output);
+      if (!url) throw new Error("완료됐지만 이미지 주소가 없습니다. " + JSON.stringify(p.output).slice(0, 200));
+      onProgress("결과 받는 중...");
+      const res = await fetch(url); if (!res.ok) throw new Error(`결과 이미지를 받지 못했습니다 (HTTP ${res.status}).`);
+      const out = await res.blob(); const ob = await createImageBitmap(out);
+      const r = { blob: out, w, h, outW: ob.width, outH: ob.height, cost: p.metrics && typeof p.metrics.cost === "number" ? p.metrics.cost : null }; ob.close();
+      return r;
+    }
+    if (p.status === "failed" || p.status === "cancelled") throw new Error(`AI 업스케일 실패 (${p.status}) ${String(p.logs || p.error || "").slice(0, 200)}`);
+    onProgress(`AI 업스케일 ${p.status === "processing" ? "처리" : "대기"} 중... ${Math.round((Date.now() - t0) / 1000)}초`);
+  }
 }
 
 async function upscaleAndShow(blob, scale, label) {
   if (up.busy) { upSay("이미 업스케일 중입니다. 끝난 뒤 다시 눌러 주세요.", "err"); return; }
   up.busy = true; $("btnUpscale").disabled = true;
-  const t0 = Date.now();
+  const t0 = Date.now(), ai = up.mode === "ai";
   upSay(`${scale}배 업스케일 중...`);
   try {
-    const r = await runUpscaleWorker(blob, scale, (p) => upSay(p.encoding ? "PNG로 저장하는 중..." : `${scale}배 업스케일 중... ${Math.round(p.progress * 100)}%`));
-    const entry = { upscaled: true, label, model: `upscale_x${scale}`, ratio: `${r.w}×${r.h} → ${r.outW}×${r.outH}`, prompt: "", mime: "image/png",
-      dataUrl: URL.createObjectURL(r.blob), srcUrl: URL.createObjectURL(blob), time: Date.now(), ms: Date.now() - t0, tag: `${scale}배 · PNG 무손실` };
+    const r = ai ? await runAiUpscale(blob, scale, (msg) => upSay(msg))
+      : await runUpscaleWorker(blob, scale, (p) => upSay(p.encoding ? "PNG로 저장하는 중..." : p.sharpening ? "선명하게 다듬는 중..." : `${scale}배 업스케일 중... ${Math.round(p.progress * 100)}%`), up.sharpen);
+    const mime = r.blob.type || "image/png";
+    const tag = ai ? `${scale}배 · ✨ AI 고화질${r.cost != null ? ` · $${r.cost.toFixed(3)}` : ""}` : `${scale}배 · 원본 그대로${up.sharpen ? " + 선명하게" : ""} · PNG 무손실`;
+    const entry = { upscaled: true, label, model: `upscale_${ai ? "ai_" : ""}x${scale}`, ratio: `${r.w}×${r.h} → ${r.outW}×${r.outH}`, prompt: "", mime,
+      dataUrl: URL.createObjectURL(r.blob), srcUrl: URL.createObjectURL(blob), time: Date.now(), ms: Date.now() - t0, tag };
     entry.upUrl = entry.dataUrl;
     state.history.unshift(entry); renderGallery();
-    upSay(`완료: ${r.outW}×${r.outH} (${(r.blob.size / 1048576).toFixed(1)}MB). 결과 카드에서 저장하세요.`, "ok");
+    upSay(`완료: ${r.outW}×${r.outH} (${(r.blob.size / 1048576).toFixed(1)}MB)${r.cost != null ? ` · 실제 비용 $${r.cost.toFixed(3)}` : ""}. 결과 카드에서 저장하세요.`, "ok");
   } catch (e) { upSay(e.message, "err"); }
   finally { up.busy = false; $("btnUpscale").disabled = !up.blob; }
 }
@@ -770,8 +809,15 @@ async function setUpBlob(blob) {
   upSay("");
 }
 
+const UP_NOTES = {
+  local: "원본 픽셀만으로 확대(Lanczos3)해서 모양·글자·색이 바뀌지 않습니다. 무료·PNG 무손실. 원본이 흐리거나 깨져 있으면 그대로 커지니 그럴 땐 ✨ AI 고화질을 쓰세요.",
+  ai: "AI(Real-ESRGAN)가 흐림·JPEG 깨짐·노이즈를 지우고 디테일을 복원합니다. 1장 약 5~30원(eachlabs 키·잔액 필요). 아주 작은 글자·로고는 살짝 바뀔 수 있으니 원본 보기로 비교하세요.",
+};
 function renderUpScale() {
   document.querySelectorAll("#upScale .rchip").forEach((b) => { const on = Number(b.dataset.s) === up.scale; b.classList.toggle("on", on); b.setAttribute("aria-checked", on); });
+  document.querySelectorAll("#upMode .rchip").forEach((b) => { const on = b.dataset.m === up.mode; b.classList.toggle("on", on); b.setAttribute("aria-checked", on); });
+  $("upSharpRow").hidden = up.mode === "ai"; $("upSharp").checked = up.sharpen;
+  $("upNote").textContent = UP_NOTES[up.mode];
   if (up.blob && up.w) $("upInfo").textContent = `${up.blob.name || "이미지"} · ${up.w}×${up.h} → ${up.w * up.scale}×${up.h * up.scale}`;
 }
 
@@ -784,7 +830,7 @@ function upscaledCard(e, card) {
   const info = document.createElement("span"); info.textContent = ` · ${e.ratio} · ${e.tag}${e.ms ? " · " + (e.ms / 1000).toFixed(1) + "초" : ""}${e.dataUrl === e.srcUrl ? " · 원본 보는 중" : ""}`;
   meta.append(b, info); card.append(meta);
   const acts = document.createElement("div"); acts.className = "acts";
-  const s = document.createElement("button"); s.type = "button"; s.textContent = "저장 (PNG)";
+  const s = document.createElement("button"); s.type = "button"; s.textContent = e.mime.includes("jpeg") ? "저장 (JPG)" : "저장 (PNG)";
   s.addEventListener("click", () => saveImage(Object.assign({}, e, { dataUrl: e.upUrl })));
   const t = document.createElement("button"); t.type = "button"; t.textContent = e.dataUrl === e.srcUrl ? "업스케일 보기" : "원본 보기";
   t.addEventListener("click", () => { e.dataUrl = e.dataUrl === e.srcUrl ? e.upUrl : e.srcUrl; renderGallery(); });
@@ -832,7 +878,7 @@ function renderGallery() {
       vb.title = "이 이미지를 움직이는 짧은 영상으로 만듭니다 (MiniMax H3 Max · eachlabs)"; vb.disabled = !!(e.video && e.video.status === "running");
       vb.addEventListener("click", () => openVideoDialog(e));
       const ub = document.createElement("button"); ub.type = "button"; ub.textContent = "🔍 업스케일";
-      ub.title = "위 업스케일 칸에서 고른 배율(2배/3배)로 원본 그대로 확대합니다 (AI 아님 · PNG 무손실)";
+      ub.title = "위 업스케일 칸에서 고른 방식(원본 그대로 / AI 고화질)과 배율(2배/3배)로 확대합니다";
       ub.addEventListener("click", () => upscaleAndShow(b64ToBlob(e.b64, e.mime), up.scale, `${e.label} 업스케일`));
       acts.append(vb, ub);
       card.append(acts);
@@ -2056,7 +2102,7 @@ function reviewNode(entry) {
 
 /* ---------- 초기화 ---------- */
 async function init() {
-  const saved = await store.get(["keys", "qwenBase", "last", "assistModel", "proofModel", "assistPrefs", "autoPrefs"]);
+  const saved = await store.get(["keys", "qwenBase", "last", "assistModel", "proofModel", "assistPrefs", "autoPrefs", "upPrefs"]);
   if (saved.keys) state.keys = Object.assign(state.keys, saved.keys);
   if (saved.qwenBase) state.qwenBase = saved.qwenBase;
   if (saved.assistModel) state.assistModel = saved.assistModel;
@@ -2178,7 +2224,15 @@ async function init() {
   ["dragenter", "dragover"].forEach((t) => dropU.addEventListener(t, (e) => { e.preventDefault(); dropU.classList.add("over"); }));
   ["dragleave", "drop"].forEach((t) => dropU.addEventListener(t, (e) => { e.preventDefault(); dropU.classList.remove("over"); }));
   dropU.addEventListener("drop", (e) => pickU(e.dataTransfer.files));
-  $("upScale").addEventListener("click", (e) => { const b = e.target.closest(".rchip"); if (b) { up.scale = Number(b.dataset.s); renderUpScale(); } });
+  const up2 = saved.upPrefs || {};
+  if (up2.scale === 2 || up2.scale === 3) up.scale = up2.scale;
+  if (up2.mode === "local" || up2.mode === "ai") up.mode = up2.mode;
+  if (typeof up2.sharpen === "boolean") up.sharpen = up2.sharpen;
+  const saveUpPrefs = () => store.set({ upPrefs: { scale: up.scale, mode: up.mode, sharpen: up.sharpen } });
+  renderUpScale();
+  $("upScale").addEventListener("click", (e) => { const b = e.target.closest(".rchip"); if (b) { up.scale = Number(b.dataset.s); renderUpScale(); saveUpPrefs(); } });
+  $("upMode").addEventListener("click", (e) => { const b = e.target.closest(".rchip"); if (b) { up.mode = b.dataset.m; renderUpScale(); saveUpPrefs(); } });
+  $("upSharp").addEventListener("change", () => { up.sharpen = $("upSharp").checked; saveUpPrefs(); });
   $("btnUpscale").addEventListener("click", () => { if (up.blob) upscaleAndShow(up.blob, up.scale, `${up.blob.name || "이미지"} 업스케일`); });
 
   renderGallery();
